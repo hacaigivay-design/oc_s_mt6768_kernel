@@ -14,7 +14,7 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install dependencies
+      - name: Install dependencies + Clang 14 + GCC cross
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -22,39 +22,29 @@ jobs:
             python3 python3-pip zip unzip git curl wget \
             device-tree-compiler lz4 xz-utils zstd cpio rsync \
             pahole kmod libc6-dev-i386 \
-            clang lld llvm
+            clang-14 lld-14 llvm-14 \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi g++-arm-linux-gnueabi \
+            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
 
-      # ------------------------------------------------------------------
-      # Tai AOSP Clang prebuilt (giong nguoi khac dung)
-      # Kernel 4.19 MTK dung Clang 12 hoac 14
-      # ------------------------------------------------------------------
-      - name: Download AOSP Clang toolchain
-        run: |
-          mkdir -p $HOME/toolchain
-          cd $HOME/toolchain
+          sudo ln -sf /usr/bin/clang-14 /usr/local/bin/clang
+          sudo ln -sf /usr/bin/ld.lld-14 /usr/local/bin/ld.lld
+          sudo ln -sf /usr/bin/llvm-ar-14 /usr/local/bin/llvm-ar
+          sudo ln -sf /usr/bin/llvm-nm-14 /usr/local/bin/llvm-nm
+          sudo ln -sf /usr/bin/llvm-objcopy-14 /usr/local/bin/llvm-objcopy
+          sudo ln -sf /usr/bin/llvm-objdump-14 /usr/local/bin/llvm-objdump
+          sudo ln -sf /usr/bin/llvm-strip-14 /usr/local/bin/llvm-strip
 
-          echo "=== Tai Clang 12 (on dinh cho kernel 4.19) ==="
-          git clone --depth=1 \
-            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
-            clang-aosp || echo "Clone that bai"
-
-          echo "=== Kiem tra ==="
-          ls -d $HOME/toolchain/clang-aosp/clang-* 2>/dev/null || true
+          echo "=== Clang ==="
+          clang --version | head -1
+          echo "=== GCC cross ==="
+          aarch64-linux-gnu-gcc --version | head -1
 
       - name: Prepare output dir
         run: mkdir -p out
 
       - name: Configure kernel
         run: |
-          # Tim thu muc clang moi nhat trong prebuilt
-          CLANG_DIR=$(ls -d $HOME/toolchain/clang-aosp/clang-* 2>/dev/null | sort -V | tail -1)
-          if [ -z "$CLANG_DIR" ]; then
-            echo "KHONG TIM THAY CLANG!"
-            ls -la $HOME/toolchain/clang-aosp/ || true
-            exit 1
-          fi
-
-          export PATH="$CLANG_DIR/bin:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
@@ -68,10 +58,7 @@ jobs:
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
 
-          echo "=== Clang ==="
-          clang --version | head -1
-          ld.lld --version | head -1
-
+          # Buoc defconfig dung GCC cross de test compiler
           make O=out ARCH=arm64 vendor/mt6768_defconfig
 
           echo "=== Merge merlin.config ==="
@@ -84,10 +71,8 @@ jobs:
           echo "=== KIEM TRA CONFIG ==="
           grep -E "CONFIG_BLK_INLINE_ENCRYPTION|CONFIG_ARCH_MEDIATEK|CONFIG_CC_OPTIMIZE" out/.config || true
 
-      - name: Build kernel
+      - name: Build kernel (Clang 14)
         run: |
-          CLANG_DIR=$(ls -d $HOME/toolchain/clang-aosp/clang-* 2>/dev/null | sort -V | tail -1)
-          export PATH="$CLANG_DIR/bin:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
@@ -111,6 +96,10 @@ jobs:
       - name: Show errors if failed
         if: failure()
         run: |
+          if [ ! -f build.log ]; then
+            echo "build.log KHONG TON TAI - build fail truoc buoc Build kernel"
+            exit 0
+          fi
           echo "======== error: DAU TIEN ========"
           grep -n -B10 -A15 "error:" build.log | head -200 || echo "(khong co error:)"
           echo ""
@@ -126,6 +115,7 @@ jobs:
         with:
           name: build-log
           path: build.log
+          if-no-files-found: warn
           retention-days: 7
 
       - name: Upload kernel artifacts
