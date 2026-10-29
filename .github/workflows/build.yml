@@ -36,20 +36,23 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          # 1) Defconfig gốc MT6768
           make O=out ARCH=arm64 vendor/mt6768_defconfig
 
-          # 2) Merge fragment merlin
           echo "=== Merge merlin.config ==="
           ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m \
             out/.config \
             arch/arm64/configs/vendor/merlin.config
 
-          # 3) Resolve
+          # Fix dm.c + blk-crypto.h (GCC 11 strict inline)
+          scripts/config --file out/.config \
+            -d BLK_INLINE_ENCRYPTION \
+            -d BLK_INLINE_ENCRYPTION_FALLBACK \
+            -d DM_DEFAULT_CRYPTO_PROFILE
+
           make O=out ARCH=arm64 olddefconfig
 
           echo "=== KIEM TRA CONFIG ==="
-          grep -E "CONFIG_ARCH_MEDIATEK|CONFIG_MTK|CONFIG_CC_OPTIMIZE|CONFIG_DEBUG_INFO=|CONFIG_KVM=|CONFIG_BPF=" out/.config || true
+          grep -E "CONFIG_BLK_INLINE_ENCRYPTION|CONFIG_ARCH_MEDIATEK|CONFIG_CC_OPTIMIZE" out/.config || true
 
       - name: Build kernel
         run: |
