@@ -23,6 +23,12 @@ jobs:
             device-tree-compiler lz4 xz-utils zstd cpio rsync \
             gcc-10-aarch64-linux-gnu gcc-10-arm-linux-gnueabi binutils-aarch64-linux-gnu
 
+      - name: Patch kernel source (Fix mmu_notifier error)
+        run: |
+          echo "Đang vá lỗi enum mmu_notifier_event..."
+          # Tự động thêm khai báo enum vào trước hàm bị lỗi
+          sed -i 's/static inline void mmu_notifier_range_init(struct mmu_notifier_range \*range,/enum mmu_notifier_event;\nstatic inline void mmu_notifier_range_init(struct mmu_notifier_range *range,/' include/linux/mmu_notifier.h
+
       - name: Prepare output dir
         run: mkdir -p out
 
@@ -47,12 +53,13 @@ jobs:
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
-          
-          # SỬA LỖI TẠI ĐÂY: Chỉ dùng tiền tố chuẩn, không ghép gcc-10 vào CROSS_COMPILE
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
           echo "Bắt đầu build kernel bằng GCC-10..."
+          # Dọn dẹp thư mục out cũ để tránh lỗi cache
+          make O=out ARCH=arm64 mrproper || true
+          
           make O=out ARCH=arm64 -j$(nproc) \
             CC=aarch64-linux-gnu-gcc-10 \
             LD=aarch64-linux-gnu-ld \
