@@ -23,19 +23,29 @@ jobs:
             device-tree-compiler lz4 xz-utils zstd cpio rsync \
             gcc-10-aarch64-linux-gnu gcc-10-arm-linux-gnueabi binutils-aarch64-linux-gnu
 
-      - name: Patch kernel source (Fix mmu_notifier & jump_label)
+      - name: Patch kernel source (mmu_notifier + jump_label)
         run: |
-          echo "Đang vá lỗi mmu_notifier..."
+          echo "=== Vá lỗi mmu_notifier ==="
           sed -i '/static inline void mmu_notifier_range_init/i enum mmu_notifier_event { MMU_NOTIFY_UNMAP = 0, MMU_NOTIFY_CLEAR, MMU_NOTIFY_PROTECTION_VMA, MMU_NOTIFY_PROTECTION_PAGE, MMU_NOTIFY_SOFT_DIRTY, MMU_NOTIFY_RELEASE, MMU_NOTIFY_MIGRATE };' include/linux/mmu_notifier.h
 
-          echo "Đang vá lỗi asm_volatile_goto / impossible constraint (jump_label.h)..."
-          # Thêm 'const' vào tham số key để GCC nhận biết hằng số -> đáp ứng ràng buộc 'i' trong asm
-          sed -i 's/static __always_inline bool arch_static_branch(struct static_key \*key,/static __always_inline bool arch_static_branch(struct static_key * const key,/' arch/arm64/include/asm/jump_label.h
-          sed -i 's/static __always_inline bool arch_static_branch_jump(struct static_key \*key,/static __always_inline bool arch_static_branch_jump(struct static_key * const key,/' arch/arm64/include/asm/jump_label.h
+          echo "=== Vá lỗi asm_volatile_goto (jump_label.h) bằng Python ==="
+          python3 - <<'PY'
+          import re, sys
+          p = "arch/arm64/include/asm/jump_label.h"
+          s = open(p).read()
+          # Thêm 'const' vào tham số key của arch_static_branch và arch_static_branch_jump
+          pattern = r'(static\s+__always_inline\s+bool\s+arch_static_branch(?:_jump)?\s*\(\s*struct\s+static_key\s*\*\s*)(key)'
+          s2, n = re.subn(pattern, r'\1const \2', s)
+          if n == 0:
+              print("CẢNH BÁO: Không khớp mẫu, in 2000 ký tự đầu để debug:")
+              print(s[:2000])
+              sys.exit(1)
+          open(p, "w").write(s2)
+          print(f"Đã vá {n} hàm trong jump_label.h")
+          PY
 
-          echo "Vá thành công!"
-          echo "----- Kiểm tra jump_label.h -----"
-          grep -n "arch_static_branch" arch/arm64/include/asm/jump_label.h | head -20
+          echo "=== Kiểm tra sau khi vá ==="
+          grep -n "arch_static_branch" arch/arm64/include/asm/jump_label.h
 
       - name: Prepare output dir
         run: mkdir -p out
@@ -59,10 +69,8 @@ jobs:
           echo "CONFIG_ARCH_MTK_PROJECT=\"merlin\"" >> out/.config
 
           echo "Bước 3.1: Ép mức tối ưu hóa -O2 (nguyên nhân gốc lỗi jump_label)..."
-          # Tắt hẳn optimize for size & debug để tránh -O0/-Os
           scripts/config --file out/.config -e CC_OPTIMIZE_FOR_PERFORMANCE
           scripts/config --file out/.config -d CC_OPTIMIZE_FOR_SIZE
-          # Tắt debug info để tránh về -O0 (chỉ bật cho những cái cần thiết)
           scripts/config --file out/.config -d DEBUG_INFO
           scripts/config --file out/.config -d DEBUG_INFO_DWARF4
           scripts/config --file out/.config -d DEBUG_INFO_DWARF5
