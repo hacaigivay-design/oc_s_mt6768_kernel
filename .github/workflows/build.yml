@@ -17,18 +17,21 @@ jobs:
       - name: Integrate FinaSU
         run: |
           curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash || true
-          echo "=== Tim file_wrapper.c ==="
           find . -name "file_wrapper.c" 2>/dev/null
-          echo "=== Tim seccomp_cache.c ==="
           find . -name "seccomp_cache.c" 2>/dev/null
+          find . -name "init.c" -path "*kernelsu*" 2>/dev/null
 
       - name: Patch FinaSU for kernel 4.19
         run: |
           set -e
 
-          # --- Fix init.c MODULE_IMPORT_NS ---
+          # --- Fix init.c MODULE_IMPORT_NS (linh hoat) ---
           for f in $(find . -name "init.c" -path "*kernelsu*" 2>/dev/null); do
-            sed -i 's|^MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);|/* removed for 4.19 */|' "$f" || true
+            echo "Patching MODULE_IMPORT_NS in: $f"
+            sed -i 's|^\(.*\)MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);|\1/* MODULE_IMPORT_NS removed for 4.19 */|' "$f" || true
+            sed -i '/MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver)/d' "$f" || true
+            echo "=== Verify $f ==="
+            grep -n "MODULE_IMPORT_NS" "$f" || echo "(da xoa sach)"
           done
 
           # --- Fix fs/dcache.c susfs include ---
@@ -76,8 +79,6 @@ jobs:
           fi
           echo "Patching: $SC"
 
-          # Thay the toan bo file bang stub rong cho kernel < 5.9
-          # Vi kernel 4.19 khong co SECCOMP_ARCH_NATIVE_NR va struct seccomp_filter moi
           cat > "$SC" << 'SCEOF'
           // SPDX-License-Identifier: GPL-2.0
           /* Stub for kernel 4.19 - seccomp cache infrastructure not available */
@@ -86,7 +87,6 @@ jobs:
           #include "infra/seccomp_cache.h"
 
           #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
-          /* Kernel 4.19: seccomp cache not available, use no-op stubs */
           void ksu_seccomp_clear_cache(struct seccomp_filter *filter, int nr)
           {
               (void)filter;
