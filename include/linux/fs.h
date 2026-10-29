@@ -3665,5 +3665,7 @@ static inline int inode_drain_writes(struct inode *inode)
 	inode_dio_wait(inode);
 	return filemap_write_and_wait(inode->i_mapping);
 }
-
+#ifdef CONFIG_KSU_SUSFS
+#define INODE_STATE_SUS_PATH (1 << 16)
+#endif
 #endif /* _LINUX_FS_H */
