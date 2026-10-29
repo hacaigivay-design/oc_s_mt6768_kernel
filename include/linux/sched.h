@@ -2057,5 +2057,7 @@ static inline void rseq_syscall(struct pt_regs *regs)
 }
 
 #endif
-
+#ifdef CONFIG_KSU_SUSFS
+#define TASK_STRUCT_NON_ROOT_USER_APP_PROC (1 << 0)
+#endif
 #endif
