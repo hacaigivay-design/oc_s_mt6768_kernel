@@ -31,7 +31,7 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           # NHỚ SỬA <TEN_DEFCONFIG> THÀNH TÊN FILE DEFCONFIG CỦA MÁY BẠN
-          make O=out ARCH=arm64 <TEN_DEFCONFIG>_defconfig
+          make O=out ARCH=arm64 <mt6768_defconfig>_defconfig
 
       - name: Build kernel
         run: |
