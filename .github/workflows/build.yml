@@ -23,23 +23,25 @@ jobs:
             device-tree-compiler lz4 xz-utils zstd cpio rsync \
             gcc-10-aarch64-linux-gnu gcc-10-arm-linux-gnueabi binutils-aarch64-linux-gnu
 
-      - name: Patch kernel source (Triệt để lỗi mmu_notifier)
+      - name: Patch kernel source (Fix mmu_notifier error)
         run: |
-          echo "Đang sửa lỗi enum mmu_notifier_event..."
-          # Chèn định nghĩa enum vào trước hàm range_init
-          sed -i '/static inline void mmu_notifier_range_init/i \
-enum mmu_notifier_event {\
-	MMU_NOTIFY_UNMAP = 0,\
-	MMU_NOTIFY_CLEAR,\
-	MMU_NOTIFY_PROTECTION_VMA,\
-	MMU_NOTIFY_PROTECTION_PAGE,\
-	MMU_NOTIFY_SOFT_DIRTY,\
-	MMU_NOTIFY_RELEASE,\
-	MMU_NOTIFY_MIGRATE,\
-};' include/linux/mmu_notifier.h
-          
-          # Đảm bảo file header được include
-          sed -i 's/#include <linux\/mm_types.h>/#include <linux\/mm_types.h>\n#include <linux\/mmu_notifier.h>/' include/linux/kvm_host.h || true
+          python3 -c "
+import os
+file_path = 'include/linux/mmu_notifier.h'
+if os.path.exists(file_path):
+    with open(file_path, 'r') as f:
+        lines = f.readlines()
+    new_lines = []
+    for line in lines:
+        if 'static inline void mmu_notifier_range_init' in line:
+            new_lines.append('enum mmu_notifier_event { MMU_NOTIFY_UNMAP = 0, MMU_NOTIFY_CLEAR, MMU_NOTIFY_PROTECTION_VMA, MMU_NOTIFY_PROTECTION_PAGE, MMU_NOTIFY_SOFT_DIRTY, MMU_NOTIFY_RELEASE, MMU_NOTIFY_MIGRATE };\n')
+        new_lines.append(line)
+    with open(file_path, 'w') as f:
+        f.writelines(new_lines)
+    print('Đã vá file mmu_notifier.h thành công!')
+else:
+    print('Không tìm thấy file mmu_notifier.h')
+"
 
       - name: Prepare output dir
         run: mkdir -p out
@@ -62,7 +64,7 @@ enum mmu_notifier_event {\
           echo "CONFIG_BUILD_ARM64_DTB_OVERLAY_IMAGE_NAMES=\"mediatek/merlin\"" >> out/.config
           echo "CONFIG_ARCH_MTK_PROJECT=\"merlin\"" >> out/.config
           
-          # Đồng bộ lại config
+          echo "Bước 4: Đồng bộ lại config..."
           make O=out ARCH=arm64 olddefconfig
 
       - name: Build kernel (Using GCC-10)
