@@ -17,23 +17,37 @@ jobs:
       - name: Integrate FinaSU
         run: |
           curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash || true
-          find . -name "file_wrapper.c" 2>/dev/null
-          find . -name "seccomp_cache.c" 2>/dev/null
-          find . -name "init.c" -path "*kernelsu*" 2>/dev/null
+          echo "=== Kiem tra FinaSU ==="
+          ls -la FinaSU/ 2>/dev/null || echo "FinaSU KHONG TON TAI!"
+          echo "=== Kiem tra init.c ==="
+          ls -la FinaSU/kernel/core/init.c 2>/dev/null || echo "init.c KHONG TON TAI!"
+          echo "=== Tim MODULE_IMPORT_NS ==="
+          grep -rn "MODULE_IMPORT_NS" FinaSU/ 2>/dev/null || echo "(khong thay)"
 
       - name: Patch FinaSU for kernel 4.19
         run: |
           set -e
 
-          # --- Fix init.c MODULE_IMPORT_NS bang perl ---
-          for f in $(find . -name "init.c" -path "*kernelsu*" 2>/dev/null); do
-            echo "Patching MODULE_IMPORT_NS in: $f"
-            perl -i -ne 'print unless /MODULE_IMPORT_NS/' "$f" || true
-            echo "=== Verify $f ==="
-            grep -n "MODULE_IMPORT_NS" "$f" && echo "VAN CON!" || echo "(da xoa sach)"
-            echo "=== Dong 285-292 sau patch ==="
-            sed -n '285,292p' "$f"
-          done
+          # --- Fix MODULE_IMPORT_NS trong init.c (hardcode duong dan) ---
+          INIT_C="FinaSU/kernel/core/init.c"
+          if [ -f "$INIT_C" ]; then
+            echo "Patching MODULE_IMPORT_NS in: $INIT_C"
+            # Xoa ca khoi #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0) ... #endif
+            # chua MODULE_IMPORT_NS, thay bang comment
+            perl -0777 -i -pe 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION\(6, 13, 0\)\s*\n\s*MODULE_IMPORT_NS\([^)]*\);\s*\n#else\s*\n\s*MODULE_IMPORT_NS\([^)]*\);\s*\n#endif/\/\* MODULE_IMPORT_NS removed for 4.19 \*\//gs' "$INIT_C" || true
+            # Fallback: xoa tung dong MODULE_IMPORT_NS con lai
+            perl -i -ne 'print unless /MODULE_IMPORT_NS/' "$INIT_C" || true
+            echo "=== Verify $INIT_C ==="
+            grep -n "MODULE_IMPORT_NS" "$INIT_C" && echo "VAN CON!" || echo "(da xoa sach)"
+            echo "=== 5 dong cuoi ==="
+            tail -5 "$INIT_C"
+          else
+            echo "CANH BAO: $INIT_C khong ton tai!"
+            echo "=== Liet ke file init.c trong FinaSU ==="
+            find FinaSU -name "init.c" 2>/dev/null
+            echo "=== Liet ke toan bo FinaSU ==="
+            find FinaSU -maxdepth 3 -type d 2>/dev/null | head -20
+          fi
 
           # --- Fix fs/dcache.c susfs include ---
           if [ -f fs/dcache.c ]; then
