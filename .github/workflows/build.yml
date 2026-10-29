@@ -25,13 +25,14 @@ jobs:
         run: |
           set -e
 
-          # --- Fix init.c MODULE_IMPORT_NS (linh hoat) ---
+          # --- Fix init.c MODULE_IMPORT_NS bang perl ---
           for f in $(find . -name "init.c" -path "*kernelsu*" 2>/dev/null); do
             echo "Patching MODULE_IMPORT_NS in: $f"
-            sed -i 's|^\(.*\)MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);|\1/* MODULE_IMPORT_NS removed for 4.19 */|' "$f" || true
-            sed -i '/MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver)/d' "$f" || true
+            perl -i -ne 'print unless /MODULE_IMPORT_NS/' "$f" || true
             echo "=== Verify $f ==="
-            grep -n "MODULE_IMPORT_NS" "$f" || echo "(da xoa sach)"
+            grep -n "MODULE_IMPORT_NS" "$f" && echo "VAN CON!" || echo "(da xoa sach)"
+            echo "=== Dong 285-292 sau patch ==="
+            sed -n '285,292p' "$f"
           done
 
           # --- Fix fs/dcache.c susfs include ---
