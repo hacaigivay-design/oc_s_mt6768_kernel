@@ -23,11 +23,19 @@ jobs:
             device-tree-compiler lz4 xz-utils zstd cpio rsync \
             gcc-10-aarch64-linux-gnu gcc-10-arm-linux-gnueabi binutils-aarch64-linux-gnu
 
-      - name: Patch kernel source (Fix mmu_notifier error)
+      - name: Patch kernel source (Fix mmu_notifier & jump_label)
         run: |
           echo "Đang vá lỗi mmu_notifier..."
           sed -i '/static inline void mmu_notifier_range_init/i enum mmu_notifier_event { MMU_NOTIFY_UNMAP = 0, MMU_NOTIFY_CLEAR, MMU_NOTIFY_PROTECTION_VMA, MMU_NOTIFY_PROTECTION_PAGE, MMU_NOTIFY_SOFT_DIRTY, MMU_NOTIFY_RELEASE, MMU_NOTIFY_MIGRATE };' include/linux/mmu_notifier.h
+
+          echo "Đang vá lỗi asm_volatile_goto / impossible constraint (jump_label.h)..."
+          # Thêm 'const' vào tham số key để GCC nhận biết hằng số -> đáp ứng ràng buộc 'i' trong asm
+          sed -i 's/static __always_inline bool arch_static_branch(struct static_key \*key,/static __always_inline bool arch_static_branch(struct static_key * const key,/' arch/arm64/include/asm/jump_label.h
+          sed -i 's/static __always_inline bool arch_static_branch_jump(struct static_key \*key,/static __always_inline bool arch_static_branch_jump(struct static_key * const key,/' arch/arm64/include/asm/jump_label.h
+
           echo "Vá thành công!"
+          echo "----- Kiểm tra jump_label.h -----"
+          grep -n "arch_static_branch" arch/arm64/include/asm/jump_label.h | head -20
 
       - name: Prepare output dir
         run: mkdir -p out
@@ -36,22 +44,34 @@ jobs:
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
-          
+
           echo "Bước 1: Tạo base config..."
           make O=out ARCH=arm64 defconfig
-          
+
           echo "Bước 2: Gộp cấu hình merlin.config..."
           ARCH=arm64 scripts/kconfig/merge_config.sh -O out \
             out/.config \
             arch/arm64/configs/vendor/merlin.config
-          
+
           echo "Bước 3: Ép bật các CONFIG bắt buộc (Fix xung đột)..."
           echo "CONFIG_MMU_NOTIFIER=y" >> out/.config
           echo "CONFIG_BUILD_ARM64_DTB_OVERLAY_IMAGE_NAMES=\"mediatek/merlin\"" >> out/.config
           echo "CONFIG_ARCH_MTK_PROJECT=\"merlin\"" >> out/.config
-          
+
+          echo "Bước 3.1: Ép mức tối ưu hóa -O2 (nguyên nhân gốc lỗi jump_label)..."
+          # Tắt hẳn optimize for size & debug để tránh -O0/-Os
+          scripts/config --file out/.config -e CC_OPTIMIZE_FOR_PERFORMANCE
+          scripts/config --file out/.config -d CC_OPTIMIZE_FOR_SIZE
+          # Tắt debug info để tránh về -O0 (chỉ bật cho những cái cần thiết)
+          scripts/config --file out/.config -d DEBUG_INFO
+          scripts/config --file out/.config -d DEBUG_INFO_DWARF4
+          scripts/config --file out/.config -d DEBUG_INFO_DWARF5
+
           echo "Bước 4: Đồng bộ lại config..."
           make O=out ARCH=arm64 olddefconfig
+
+          echo "Bước 5: Kiểm tra mức tối ưu hóa..."
+          grep -E "CONFIG_CC_OPTIMIZE|CONFIG_DEBUG_INFO=" out/.config || true
 
       - name: Build kernel (Using GCC-10)
         run: |
@@ -59,7 +79,7 @@ jobs:
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          
+
           echo "Bắt đầu build kernel bằng GCC-10..."
           make O=out ARCH=arm64 -j$(nproc) \
             CC=aarch64-linux-gnu-gcc-10 \
@@ -70,7 +90,7 @@ jobs:
             OBJDUMP=aarch64-linux-gnu-objdump \
             STRIP=aarch64-linux-gnu-strip \
             KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-strict-prototypes" \
-            KBUILD_CFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-strict-prototypes"
+            KBUILD_CFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-strict-prototypes -O2"
 
       - name: Upload kernel artifacts
         if: success()
