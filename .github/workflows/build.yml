@@ -19,28 +19,23 @@ jobs:
           curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash -s legacy || \
           curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash
           ls -la KernelSU/ 2>/dev/null || ls -la drivers/kernelsu/ 2>/dev/null || true
-          grep -rn "KernelSU" Kconfig drivers/Kconfig 2>/dev/null || echo "chua thay source Kconfig cua FinaSU"
 
       - name: Patch FinaSU for kernel 4.19
         run: |
           set -e
 
-          # Fix 1: MODULE_IMPORT_NS
           if [ -f drivers/kernelsu/core/init.c ]; then
             sed -i 's|^MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);|/* removed for 4.19 */|' drivers/kernelsu/core/init.c || true
           fi
 
-          # Fix 2: include susfs.h vao fs/dcache.c
           if [ -f fs/dcache.c ]; then
             grep -q "linux/susfs.h" fs/dcache.c || sed -i '/#include <linux\/dcache.h>/a #ifdef CONFIG_KSU_SUSFS\n#include <linux\/susfs.h>\n#endif' fs/dcache.c || true
           fi
 
-          # Fix 3: macro INODE_STATE_SUS_PATH
           if [ -f include/linux/fs.h ] && ! grep -q "INODE_STATE_SUS_PATH" include/linux/fs.h; then
             sed -i '/^#endif \/\* _LINUX_FS_H \*\//i #ifdef CONFIG_KSU_SUSFS\n#ifndef INODE_STATE_SUS_PATH\n#define INODE_STATE_SUS_PATH (1 << 16)\n#endif\n#endif' include/linux/fs.h || true
           fi
 
-          # Fix 4: macro TASK_STRUCT_NON_ROOT_USER_APP_PROC
           if [ -f include/linux/sched.h ] && ! grep -q "TASK_STRUCT_NON_ROOT_USER_APP_PROC" include/linux/sched.h; then
             sed -i '/^#endif \/\* _LINUX_SCHED_H \*\//i #ifdef CONFIG_KSU_SUSFS\n#ifndef TASK_STRUCT_NON_ROOT_USER_APP_PROC\n#define TASK_STRUCT_NON_ROOT_USER_APP_PROC (1 << 0)\n#endif\n#endif' include/linux/sched.h || true
           fi
@@ -55,25 +50,80 @@ jobs:
           fi
           echo "Patching: $F"
 
-          # Sua iopoll (kernel >= 5.1)
-          sed -i 's|return orig->f_op->iopoll(kiocb, spin);|#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n    return orig->f_op->iopoll(kiocb, spin);\n#else\n    return -EOPNOTSUPP;\n#endif|' "$F" || true
+          cat > /tmp/patch_fw.py << 'PYEOF'
+          import sys, re
 
-          # Sua iopoll trong wrapper ops
-          sed -i 's|p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;|#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n    p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;\n#endif|' "$F" || true
+          path = sys.argv[1]
+          with open(path, 'r', errors='ignore') as f:
+              lines = f.readlines()
 
-          # Sua remap_file_range block: thay ca block bang phien ban 4.19 an toan
-          # Dung python vi block nhieu dong, nhung viet ra file tam bang printf de tranh heredoc
-          printf '%s\n' \
-            'import sys, re' \
-            'p = sys.argv[1]' \
-            's = open(p, errors="ignore").read()' \
-            'pat = r"if\\s*\\(remap_flags\\s*&\\s*REMAP_FILE_DEDUP\\)\\s*\\{[^}]*\\}\\s*else\\s*\\{[^}]*\\}"' \
-            'rep = "#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\\n    if (remap_flags & REMAP_FILE_DEDUP) { return -EOPNOTSUPP; }\\n    return orig->f_op->remap_file_range(file_in, pos_in, orig, pos_out, len, remap_flags);\\n#else\\n    return -EOPNOTSUPP;\\n#endif"' \
-            's = re.sub(pat, rep, s, flags=re.S)' \
-            'open(p, "w").write(s)' \
-            'print("remap patch done")' \
-            > /tmp/p.py
-          python3 /tmp/p.py "$F"
+          out = []
+          i = 0
+          while i < len(lines):
+              line = lines[i]
+
+              # 1. iopoll (kernel >= 5.1)
+              if 'orig->f_op->iopoll' in line and 'return' in line:
+                  out.append('#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n')
+                  out.append(line)
+                  out.append('#else\n')
+                  out.append('    return -EOPNOTSUPP;\n')
+                  out.append('#endif\n')
+                  i += 1
+                  continue
+
+              # 2. p->ops.iopoll assignment (kernel >= 5.1)
+              if 'p->ops.iopoll' in line and 'fp->f_op->iopoll' in line:
+                  out.append('#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n')
+                  out.append(line)
+                  out.append('#endif\n')
+                  i += 1
+                  continue
+
+              # 3. Block remap_file_range / REMAP_FILE_DEDUP: boc ca cum if..else
+              if 'REMAP_FILE_DEDUP' in line:
+                  # Tim den khi het block else {...}
+                  block = [line]
+                  depth = line.count('{') - line.count('}')
+                  j = i + 1
+                  while j < len(lines) and depth > 0:
+                      block.append(lines[j])
+                      depth += lines[j].count('{') - lines[j].count('}')
+                      j += 1
+                  # Them phan else neu co
+                  if j < len(lines) and 'else' in lines[j]:
+                      block.append(lines[j])
+                      depth = lines[j].count('{') - lines[j].count('}')
+                      j += 1
+                      while j < len(lines) and depth > 0:
+                          block.append(lines[j])
+                          depth += lines[j].count('{') - lines[j].count('}')
+                          j += 1
+                  out.append('#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\n')
+                  out.extend(block)
+                  out.append('#else\n')
+                  out.append('    return -EOPNOTSUPP;\n')
+                  out.append('#endif\n')
+                  i = j
+                  continue
+
+              # 4. p->ops.remap_file_range assignment (kernel >= 4.20)
+              if 'p->ops.remap_file_range' in line:
+                  out.append('#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\n')
+                  out.append(line)
+                  out.append('#endif\n')
+                  i += 1
+                  continue
+
+              out.append(line)
+              i += 1
+
+          with open(path, 'w') as f:
+              f.writelines(out)
+          print("PATCHED OK")
+          PYEOF
+
+          python3 /tmp/patch_fw.py "$F"
 
           echo "=== Verify ==="
           grep -n "iopoll\|remap_file_range\|REMAP_FILE_DEDUP" "$F" || true
