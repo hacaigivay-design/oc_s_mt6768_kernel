@@ -15,10 +15,7 @@ jobs:
           fetch-depth: 1
 
       # ------------------------------------------------------------------
-      # 1) Cài dependencies + toolchain GCC-10
-      #    - gcc-10-aarch64-linux-gnu   → binary aarch64-linux-gnu-gcc-10
-      #    - gcc-aarch64-linux-gnu      → symlink aarch64-linux-gnu-gcc
-      #    (bắt buộc có symlink vì kernel Makefile tự gọi tên không số)
+      # 1) Dependencies + toolchain GCC-10 + symlink (fix lỗi compiler not found)
       # ------------------------------------------------------------------
       - name: Install build dependencies & toolchain
         run: |
@@ -34,10 +31,6 @@ jobs:
             binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
             pahole kmod libc6-dev-i386
 
-      # ------------------------------------------------------------------
-      # 2) Ép symlink aarch64-linux-gnu-gcc → bản gcc-10 (kernel 4.19 MTK)
-      #    (nếu bước cài đã tạo symlink trỏ gcc-11/12, ghi đè để chắc chắn)
-      # ------------------------------------------------------------------
       - name: Force toolchain to GCC-10
         run: |
           sudo ln -sf /usr/bin/aarch64-linux-gnu-gcc-10 /usr/local/bin/aarch64-linux-gnu-gcc
@@ -52,10 +45,7 @@ jobs:
         run: mkdir -p out
 
       # ------------------------------------------------------------------
-      # 3) Configure kernel
-      #    - Export CC/LD/... ngay từ defconfig (đây là chỗ trước đây fail)
-      #    - Không tắt KPROBES / FUNCTION_TRACER / STACK_TRACER
-      #    - Không echo CONFIG_MMU_NOTIFIER=y (symbol không tồn tại)
+      # 2) Configure
       # ------------------------------------------------------------------
       - name: Configure kernel (defconfig + merlin config)
         run: |
@@ -71,10 +61,8 @@ jobs:
           export OBJDUMP=aarch64-linux-gnu-objdump
           export STRIP=aarch64-linux-gnu-strip
 
-          # 3.1) Defconfig gốc
           make O=out ARCH=arm64 defconfig
 
-          # 3.2) Merge merlin.config (nếu có)
           if [ -f arch/arm64/configs/vendor/merlin.config ]; then
             echo "=== Merge merlin.config ==="
             ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m \
@@ -84,7 +72,6 @@ jobs:
             echo "CẢNH BÁO: Không tìm thấy arch/arm64/configs/vendor/merlin.config"
           fi
 
-          # 3.3) Tối ưu hóa: ép -O2, tắt debug nặng
           scripts/config --file out/.config \
             -e CC_OPTIMIZE_FOR_PERFORMANCE \
             -d CC_OPTIMIZE_FOR_SIZE \
@@ -97,14 +84,27 @@ jobs:
             -d KCSAN \
             -d DEBUG_KMEMLEAK
 
-          # 3.4) Resolve lại config
           make O=out ARCH=arm64 olddefconfig
 
           echo "=== KIỂM TRA CONFIG ==="
           grep -E "CONFIG_CC_OPTIMIZE|CONFIG_DEBUG_INFO=|CONFIG_KPROBES|CONFIG_FUNCTION_TRACER" out/.config || true
 
       # ------------------------------------------------------------------
-      # 4) Build
+      # 3) Kiểm tra DTB target (fix fail cuối build)
+      # ------------------------------------------------------------------
+      - name: Verify DTB target exists
+        run: |
+          echo "=== Tìm file merlin trong DTS ==="
+          find arch/arm64/boot/dts/mediatek -iname "*merlin*" 2>/dev/null || echo "KHÔNG có file merlin* trong dts/mediatek!"
+          echo ""
+          echo "=== CONFIG DTB/MTK ==="
+          grep -iE "CONFIG_ARCH_MEDIATEK|CONFIG_BUILD_ARM64_DTB|MTK_PROJECT|CONFIG_ARCH_MTK" out/.config || true
+          echo ""
+          echo "=== Makefile DTB có merlin không? ==="
+          grep -n "merlin" arch/arm64/boot/dts/mediatek/Makefile 2>/dev/null || echo "Không có 'merlin' trong Makefile DTB"
+
+      # ------------------------------------------------------------------
+      # 4) Build (bỏ V=1 để log ngắn, tail -400 để GitHub không truncate)
       # ------------------------------------------------------------------
       - name: Build kernel (GCC-10)
         run: |
@@ -113,7 +113,6 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          echo "Bắt đầu build kernel..."
           set -o pipefail
           make O=out ARCH=arm64 -j$(nproc) \
             CC=aarch64-linux-gnu-gcc-10 \
@@ -123,21 +122,26 @@ jobs:
             OBJCOPY=aarch64-linux-gnu-objcopy \
             OBJDUMP=aarch64-linux-gnu-objdump \
             STRIP=aarch64-linux-gnu-strip \
-            KCFLAGS="-O2 -Wno-error -Wno-incompatible-pointer-types -Wno-strict-prototypes" \
-            V=1 \
-            2>&1 | tee build.log
+            KCFLAGS="-O2 -fcommon -Wno-error -Wno-incompatible-pointer-types -Wno-strict-prototypes -Wno-address-of-packed-member" \
+            2>&1 | tee build.log | tail -400
 
+      # ------------------------------------------------------------------
+      # 5) In lỗi rõ ràng khi fail (không bị truncate)
+      # ------------------------------------------------------------------
       - name: Show errors if build failed
         if: failure()
         run: |
-          echo "===== CÁC DÒNG error: (kèm ngữ cảnh) ====="
-          grep -n -B3 -A8 "error:" build.log | head -200 || echo "(không có error:)"
+          echo "════════ CÁC DÒNG error: ĐẦU TIÊN (kèm ngữ cảnh) ════════"
+          grep -n -B10 -A15 "error:" build.log | head -200 || echo "(không có 'error:')"
           echo ""
-          echo "===== CÁC DÒNG make[N]: *** ====="
-          grep -n -B3 -A5 "make\[[0-9]\]: \*\*\*" build.log | head -100 || true
+          echo "════════ CÁC DÒNG có 'Error 1' / 'Error 2' ════════"
+          grep -n -B5 -A5 "Error [12]" build.log | head -100 || true
           echo ""
-          echo "===== 200 DÒNG CUỐI build.log ====="
-          tail -200 build.log || true
+          echo "════════ 150 DÒNG CUỐI build.log ════════"
+          tail -150 build.log || true
+          echo ""
+          echo "════════ DÒNG CUỐI CÙNG CÓ CC/LD/AR (file đang compile khi fail) ════════"
+          grep -nE "^\s+(CC|LD|AR|AS|OBJCOPY|DTC)\s" build.log | tail -50 || true
 
       - name: Upload build log
         if: always()
