@@ -1,4 +1,4 @@
-name: Build MT6768 Kernel for Merlin
+name: Build MT6768 Kernel
 
 on:
   workflow_dispatch:
@@ -14,108 +14,49 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install build dependencies & toolchain
+      - name: List all defconfigs
+        run: |
+          echo "=== arch/arm64/configs/ ==="
+          ls arch/arm64/configs/ | grep -iE "merlin|mt6768|k68|lineage|vendor" || ls arch/arm64/configs/
+          echo ""
+          echo "=== arch/arm64/configs/vendor/ ==="
+          ls arch/arm64/configs/vendor/ 2>/dev/null || echo "KHONG CO"
+          echo ""
+          echo "=== Tìm file defconfig chứa 'merlin' ==="
+          grep -rl "merlin" arch/arm64/configs/ 2>/dev/null | head -20
+
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential bc bison flex libssl-dev libelf-dev \
-            python3 python3-pip python3-dev zip unzip git curl wget \
+            python3 zip unzip git curl wget \
             device-tree-compiler lz4 xz-utils zstd cpio rsync \
-            gcc-10-aarch64-linux-gnu g++-10-aarch64-linux-gnu \
-            gcc-10-arm-linux-gnueabi  g++-10-arm-linux-gnueabi \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
             gcc-arm-linux-gnueabi g++-arm-linux-gnueabi \
             binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
             pahole kmod libc6-dev-i386
 
-      - name: Force toolchain to GCC-10
-        run: |
-          sudo ln -sf /usr/bin/aarch64-linux-gnu-gcc-10 /usr/local/bin/aarch64-linux-gnu-gcc
-          sudo ln -sf /usr/bin/aarch64-linux-gnu-g++-10 /usr/local/bin/aarch64-linux-gnu-g++
-          sudo ln -sf /usr/bin/arm-linux-gnueabi-gcc-10 /usr/local/bin/arm-linux-gnueabi-gcc
-          sudo ln -sf /usr/bin/arm-linux-gnueabi-g++-10 /usr/local/bin/arm-linux-gnueabi-g++
-          aarch64-linux-gnu-gcc --version | head -1
-          arm-linux-gnueabi-gcc --version | head -1
-
       - name: Prepare output dir
         run: mkdir -p out
 
-      - name: Fix mmu_notifier.h enum order
-        run: python3 scripts/fix_mmu_notifier.py
-
-      - name: Configure kernel (defconfig + merlin config)
+      # ============================================================
+      # CHỈNH DÒNG NÀY sau khi xem output bước "List all defconfigs"
+      # Ví dụ: merlin_defconfig / vendor/merlin_defconfig / k6873v1_64_defconfig
+      # ============================================================
+      - name: Configure kernel
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          export CC=aarch64-linux-gnu-gcc-10
-          export LD=aarch64-linux-gnu-ld
-          export AR=aarch64-linux-gnu-ar
-          export NM=aarch64-linux-gnu-nm
-          export OBJCOPY=aarch64-linux-gnu-objcopy
-          export OBJDUMP=aarch64-linux-gnu-objdump
-          export STRIP=aarch64-linux-gnu-strip
+          make O=out ARCH=arm64 merlin_defconfig
+          # ↑ ĐỔI tên defconfig cho đúng sau khi xem output bước List
 
-          make O=out ARCH=arm64 defconfig
+          echo "=== Kiem tra config da sinh ==="
+          grep -E "CONFIG_ARCH_MEDIATEK|CONFIG_MTK|CONFIG_KVM=|CONFIG_BPF=|CONFIG_RCU_TASKS_TRACE|CONFIG_NFS_FS" out/.config || true
 
-          if [ -f arch/arm64/configs/vendor/merlin.config ]; then
-            echo "=== Merge merlin.config ==="
-            ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m \
-              out/.config \
-              arch/arm64/configs/vendor/merlin.config
-          else
-            echo "CANH BAO: Khong tim thay merlin.config"
-          fi
-
-          # Tắt debug nặng
-          scripts/config --file out/.config \
-            -e CC_OPTIMIZE_FOR_PERFORMANCE \
-            -d CC_OPTIMIZE_FOR_SIZE \
-            -d DEBUG_INFO \
-            -d DEBUG_INFO_DWARF4 \
-            -d DEBUG_INFO_DWARF5 \
-            -d DEBUG_INFO_BTF \
-            -d GCOV_KERNEL \
-            -d KASAN \
-            -d KCSAN \
-            -d DEBUG_KMEMLEAK
-
-          # FIX LOI 1: Tat KVM (kvm_main.c API mismatch)
-          scripts/config --file out/.config \
-            -d KVM \
-            -d KVM_ARM_HOST \
-            -d KVM_ARM_VGIC_V3 \
-            -d HAVE_KVM \
-            -d VIRTUALIZATION
-
-          # FIX LOI 2: Tat BPF (trampoline.c thieu rcu_tasks_trace)
-          scripts/config --file out/.config \
-            -d BPF \
-            -d BPF_SYSCALL \
-            -d BPF_JIT \
-            -d BPF_JIT_ALWAYS_ON \
-            -d BPF_UNPRIV_DEFAULT_OFF \
-            -d CGROUP_BPF \
-            -d BPF_EVENTS
-
-          make O=out ARCH=arm64 olddefconfig
-
-          echo "=== KIEM TRA CONFIG ==="
-          grep -E "CONFIG_KVM=|CONFIG_BPF=|CONFIG_BPF_SYSCALL=|CONFIG_BPF_JIT=|CONFIG_CC_OPTIMIZE|CONFIG_DEBUG_INFO=" out/.config || true
-
-      - name: Verify DTB target exists
-        run: |
-          echo "=== File merlin trong DTS ==="
-          find arch/arm64/boot/dts/mediatek -iname "*merlin*" 2>/dev/null || echo "KHONG co merlin*!"
-          echo ""
-          echo "=== CONFIG DTB/MTK ==="
-          grep -iE "CONFIG_ARCH_MEDIATEK|CONFIG_BUILD_ARM64_DTB|MTK_PROJECT|CONFIG_ARCH_MTK" out/.config || true
-          echo ""
-          echo "=== Makefile DTB ==="
-          grep -n "merlin" arch/arm64/boot/dts/mediatek/Makefile 2>/dev/null || echo "Khong co 'merlin' trong Makefile DTB"
-
-      - name: Build kernel (GCC-10)
+      - name: Build kernel
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
@@ -123,28 +64,14 @@ jobs:
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
           set -o pipefail
-          make O=out ARCH=arm64 -j$(nproc) \
-            CC=aarch64-linux-gnu-gcc-10 \
-            LD=aarch64-linux-gnu-ld \
-            AR=aarch64-linux-gnu-ar \
-            NM=aarch64-linux-gnu-nm \
-            OBJCOPY=aarch64-linux-gnu-objcopy \
-            OBJDUMP=aarch64-linux-gnu-objdump \
-            STRIP=aarch64-linux-gnu-strip \
-            KCFLAGS="-O2 -fcommon -Wno-error -Wno-error=implicit-function-declaration -Wno-incompatible-pointer-types -Wno-strict-prototypes -Wno-address-of-packed-member -Wno-missing-attributes" \
-            2>&1 | tee build.log | tail -400
+          make O=out ARCH=arm64 -j$(nproc) 2>&1 | tee build.log | tail -300
 
-      - name: Show errors if build failed
+      - name: Show errors if failed
         if: failure()
         run: |
-          echo "======== error: DAU TIEN ========"
-          grep -n -B10 -A15 "error:" build.log | head -200 || echo "(khong co 'error:')"
+          grep -n -B10 -A15 "error:" build.log | head -200 || echo "(khong co error:)"
           echo ""
-          echo "======== Error 1/2 ========"
-          grep -n -B5 -A5 "Error [12]" build.log | head -100 || true
-          echo ""
-          echo "======== 150 dong cuoi ========"
-          tail -150 build.log || true
+          tail -100 build.log
 
       - name: Upload build log
         if: always()
@@ -152,18 +79,15 @@ jobs:
         with:
           name: build-log
           path: build.log
-          if-no-files-found: warn
           retention-days: 7
 
       - name: Upload kernel artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-merlin
+          name: kernel
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/Image.gz
             out/arch/arm64/boot/Image
-            out/arch/arm64/boot/dts/mediatek/*.dtb
-          if-no-files-found: warn
           retention-days: 30
