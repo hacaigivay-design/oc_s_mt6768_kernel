@@ -16,7 +16,7 @@ jobs:
 
       - name: Integrate FinaSU
         run: |
-          echo "=== Chay setup.sh FinaSU (legacy / non-GKI) ==="
+          echo "=== Chay setup.sh FinaSU ==="
           curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash -s legacy || \
           curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash
           echo ""
@@ -25,6 +25,61 @@ jobs:
           echo ""
           echo "=== Kiem tra Kconfig da source chua ==="
           grep -rn "KernelSU" Kconfig drivers/Kconfig 2>/dev/null || echo "CANH BAO: chua thay source Kconfig cua FinaSU"
+
+      - name: Patch FinaSU for kernel 4.19 compatibility
+        run: |
+          set -e
+
+          echo "=== Fix 1: MODULE_IMPORT_NS (chi co tu kernel 5.4) ==="
+          if [ -f drivers/kernelsu/core/init.c ]; then
+            # Comment dong MODULE_IMPORT_NS neu co
+            sed -i 's|^MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);|/* MODULE_IMPORT_NS not available on 4.19 */|' \
+              drivers/kernelsu/core/init.c || true
+            echo "-> da patch drivers/kernelsu/core/init.c"
+          else
+            echo "-> KHONG tim thay drivers/kernelsu/core/init.c"
+          fi
+
+          echo ""
+          echo "=== Fix 2: SUSFS macros trong fs/dcache.c ==="
+          if [ -f fs/dcache.c ]; then
+            # Them include susfs.h neu chua co
+            if ! grep -q "linux/susfs.h" fs/dcache.c; then
+              sed -i '/#include <linux\/dcache.h>/a #ifdef CONFIG_KSU_SUSFS\n#include <linux\/susfs.h>\n#endif' fs/dcache.c || true
+              echo "-> da them include susfs.h vao fs/dcache.c"
+            else
+              echo "-> fs/dcache.c da co susfs.h"
+            fi
+          fi
+
+          echo ""
+          echo "=== Fix 3: Dinh nghia macro SUSFS neu thieu ==="
+          # INODE_STATE_SUS_PATH
+          if ! grep -rq "INODE_STATE_SUS_PATH" include/linux/fs.h 2>/dev/null; then
+            if [ -f include/linux/fs.h ]; then
+              # Chen sau dong include cuoi cung cua fs.h
+              sed -i '/^#endif \/\* _LINUX_FS_H \*\//i #ifdef CONFIG_KSU_SUSFS\n#ifndef INODE_STATE_SUS_PATH\n#define INODE_STATE_SUS_PATH (1 << 16)\n#endif\n#endif' include/linux/fs.h || true
+              echo "-> da them INODE_STATE_SUS_PATH vao include/linux/fs.h"
+            fi
+          else
+            echo "-> INODE_STATE_SUS_PATH da ton tai"
+          fi
+
+          # TASK_STRUCT_NON_ROOT_USER_APP_PROC
+          if ! grep -rq "TASK_STRUCT_NON_ROOT_USER_APP_PROC" include/linux/sched.h 2>/dev/null; then
+            if [ -f include/linux/sched.h ]; then
+              sed -i '/^#endif \/\* _LINUX_SCHED_H \*\//i #ifdef CONFIG_KSU_SUSFS\n#ifndef TASK_STRUCT_NON_ROOT_USER_APP_PROC\n#define TASK_STRUCT_NON_ROOT_USER_APP_PROC (1 << 0)\n#endif\n#endif' include/linux/sched.h || true
+              echo "-> da them TASK_STRUCT_NON_ROOT_USER_APP_PROC vao include/linux/sched.h"
+            fi
+          else
+            echo "-> TASK_STRUCT_NON_ROOT_USER_APP_PROC da ton tai"
+          fi
+
+          echo ""
+          echo "=== Verify patch ==="
+          grep -n "MODULE_IMPORT_NS" drivers/kernelsu/core/init.c 2>/dev/null || echo "(init.c khong con MODULE_IMPORT_NS)"
+          grep -n "susfs.h" fs/dcache.c 2>/dev/null || echo "(dcache.c chua co susfs.h)"
+          grep -rn "INODE_STATE_SUS_PATH\|TASK_STRUCT_NON_ROOT_USER_APP_PROC" include/linux/fs.h include/linux/sched.h 2>/dev/null || echo "(macro chua duoc dinh nghia)"
 
       - name: Install dependencies + Clang 14 + GCC cross
         run: |
@@ -70,15 +125,14 @@ jobs:
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
 
-          # Buoc defconfig goc
           make O=out ARCH=arm64 vendor/mt6768_defconfig
 
-          echo "=== Merge merlin.config (da chua block KSU + SUSFS) ==="
+          echo "=== Merge merlin.config ==="
           ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m \
             out/.config \
             arch/arm64/configs/vendor/merlin.config
 
-          # Dam bao KSU duoc bat sau merge (ghi de neu bi thieu)
+          # Dam bao KSU config
           cat >> out/.config <<'EOF'
           CONFIG_KSU=y
           CONFIG_KSU_MANUAL_HOOK=y
@@ -108,7 +162,7 @@ jobs:
           make O=out ARCH=arm64 olddefconfig
 
           echo "=== KIEM TRA CONFIG QUAN TRONG ==="
-          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_KALLSYMS|CONFIG_LTO_CLANG|CONFIG_CFI_CLANG|CONFIG_ARCH_MEDIATEK" out/.config || true
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_KALLSYMS|CONFIG_LTO_CLANG|CONFIG_CFI_CLANG" out/.config || true
 
       - name: Build kernel (Clang 14)
         run: |
