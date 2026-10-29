@@ -14,6 +14,9 @@ jobs:
         with:
           fetch-depth: 1
 
+      # ------------------------------------------------------------------
+      # 1) Dependencies + GCC-10 + symlink (fix 'compiler not found')
+      # ------------------------------------------------------------------
       - name: Install build dependencies & toolchain
         run: |
           sudo apt-get update
@@ -41,54 +44,46 @@ jobs:
         run: mkdir -p out
 
       # ------------------------------------------------------------------
-      # INSPECT: xem mmu_notifier.h thật sự có gì
+      # 2) FIX mmu_notifier.h: đảm bảo enum mmu_notifier_event
+      #    được định nghĩa TRƯỚC khi được dùng (lỗi dòng 346)
       # ------------------------------------------------------------------
-      - name: Inspect mmu_notifier.h
-        run: |
-          echo "=== 40 dòng đầu ==="
-          sed -n '1,40p' include/linux/mmu_notifier.h
-          echo ""
-          echo "=== Dòng 330-370 (quanh lỗi 346) ==="
-          sed -n '330,370p' include/linux/mmu_notifier.h
-          echo ""
-          echo "=== Tìm 'mmu_notifier_event' ==="
-          grep -n "mmu_notifier_event" include/linux/mmu_notifier.h || echo "KHÔNG có enum mmu_notifier_event!"
-
-      # ------------------------------------------------------------------
-      # PATCH: chèn enum trước chỗ dùng (chỉ khi enum chưa được định nghĩa)
-      # ------------------------------------------------------------------
-      - name: Patch mmu_notifier.h
+      - name: Fix mmu_notifier.h enum order
         run: |
           python3 - <<'PY'
-          import sys
+          import sys, re
           p = "include/linux/mmu_notifier.h"
           s = open(p).read()
 
-          if "enum mmu_notifier_event {" in s:
-              print("✓ Enum đã có định nghĩa — không patch")
+          # Nếu đã có định nghĩa enum đầy đủ → không đụng
+          if re.search(r'enum\s+mmu_notifier_event\s*\{', s):
+              print("✓ enum mmu_notifier_event đã được định nghĩa — không patch")
               sys.exit(0)
 
           lines = s.split("\n")
+
+          # Tìm dòng đầu tiên DÙNG enum (không phải định nghĩa)
           idx_use = None
           for i, ln in enumerate(lines):
-              if "enum mmu_notifier_event" in ln and "{" not in ln and ";" not in ln:
+              if "enum mmu_notifier_event" in ln and "{" not in ln:
                   idx_use = i
                   break
 
           if idx_use is None:
-              print("✗ Không tìm thấy chỗ dùng enum")
+              print("✗ Không tìm thấy chỗ dùng enum — bỏ qua")
               sys.exit(0)
 
           enum_def = """enum mmu_notifier_event {
-    MMU_NOTIFY_UNMAP = 0,
-    MMU_NOTIFY_CLEAR,
-    MMU_NOTIFY_PROTECTION_VMA,
-    MMU_NOTIFY_PROTECTION_PAGE,
-    MMU_NOTIFY_SOFT_DIRTY,
-    MMU_NOTIFY_RELEASE,
-    MMU_NOTIFY_MIGRATE,
+	MMU_NOTIFY_UNMAP = 0,
+	MMU_NOTIFY_CLEAR,
+	MMU_NOTIFY_PROTECTION_VMA,
+	MMU_NOTIFY_PROTECTION_PAGE,
+	MMU_NOTIFY_SOFT_DIRTY,
+	MMU_NOTIFY_RELEASE,
+	MMU_NOTIFY_MIGRATE,
 };
 """
+
+          # Chèn ngay TRƯỚC khối struct/function chứa dòng dùng
           insert_at = idx_use
           for j in range(idx_use, -1, -1):
               st = lines[j].lstrip()
@@ -100,9 +95,13 @@ jobs:
           open(p, "w").write("\n".join(lines))
           print(f"✓ Chèn enum tại dòng {insert_at+1} (trước chỗ dùng dòng {idx_use+1})")
           PY
-          echo "=== Xác nhận ==="
+
+          echo "=== Xác nhận sau patch ==="
           grep -n "mmu_notifier_event" include/linux/mmu_notifier.h
 
+      # ------------------------------------------------------------------
+      # 3) Configure kernel
+      # ------------------------------------------------------------------
       - name: Configure kernel (defconfig + merlin config)
         run: |
           export ARCH=arm64
@@ -153,9 +152,12 @@ jobs:
           echo "=== CONFIG DTB/MTK ==="
           grep -iE "CONFIG_ARCH_MEDIATEK|CONFIG_BUILD_ARM64_DTB|MTK_PROJECT|CONFIG_ARCH_MTK" out/.config || true
           echo ""
-          echo "=== Makefile DTB có merlin không? ==="
+          echo "=== Makefile DTB ==="
           grep -n "merlin" arch/arm64/boot/dts/mediatek/Makefile 2>/dev/null || echo "Không có 'merlin' trong Makefile DTB"
 
+      # ------------------------------------------------------------------
+      # 4) Build (log ngắn để không bị truncate)
+      # ------------------------------------------------------------------
       - name: Build kernel (GCC-10)
         run: |
           export ARCH=arm64
@@ -178,7 +180,7 @@ jobs:
       - name: Show errors if build failed
         if: failure()
         run: |
-          echo "════════ error: ĐẦU TIÊN (kèm ngữ cảnh) ════════"
+          echo "════════ error: ĐẦU TIÊN ════════"
           grep -n -B10 -A15 "error:" build.log | head -200 || echo "(không có 'error:')"
           echo ""
           echo "════════ Error 1/2 ════════"
