@@ -16,68 +16,36 @@ jobs:
 
       - name: Integrate FinaSU
         run: |
-          echo "=== Chay setup.sh FinaSU ==="
           curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash -s legacy || \
           curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash
-          echo ""
-          echo "=== Kiem tra thu muc KernelSU ==="
           ls -la KernelSU/ 2>/dev/null || ls -la drivers/kernelsu/ 2>/dev/null || true
-          echo ""
-          echo "=== Kiem tra Kconfig da source chua ==="
-          grep -rn "KernelSU" Kconfig drivers/Kconfig 2>/dev/null || echo "CANH BAO: chua thay source Kconfig cua FinaSU"
+          grep -rn "KernelSU" Kconfig drivers/Kconfig 2>/dev/null || echo "chua thay source Kconfig cua FinaSU"
 
-      - name: Patch FinaSU for kernel 4.19 compatibility
+      - name: Patch FinaSU for kernel 4.19
         run: |
           set -e
 
-          echo "=== Fix 1: MODULE_IMPORT_NS (chi co tu kernel 5.4) ==="
+          # Fix 1: MODULE_IMPORT_NS
           if [ -f drivers/kernelsu/core/init.c ]; then
-            sed -i 's|^MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);|/* MODULE_IMPORT_NS not available on 4.19 */|' \
-              drivers/kernelsu/core/init.c || true
-            echo "-> da patch drivers/kernelsu/core/init.c"
-          else
-            echo "-> KHONG tim thay drivers/kernelsu/core/init.c"
+            sed -i 's|^MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);|/* removed for 4.19 */|' drivers/kernelsu/core/init.c || true
           fi
 
-          echo ""
-          echo "=== Fix 2: SUSFS macros trong fs/dcache.c ==="
+          # Fix 2: include susfs.h vao fs/dcache.c
           if [ -f fs/dcache.c ]; then
-            if ! grep -q "linux/susfs.h" fs/dcache.c; then
-              sed -i '/#include <linux\/dcache.h>/a #ifdef CONFIG_KSU_SUSFS\n#include <linux\/susfs.h>\n#endif' fs/dcache.c || true
-              echo "-> da them include susfs.h vao fs/dcache.c"
-            else
-              echo "-> fs/dcache.c da co susfs.h"
-            fi
+            grep -q "linux/susfs.h" fs/dcache.c || sed -i '/#include <linux\/dcache.h>/a #ifdef CONFIG_KSU_SUSFS\n#include <linux\/susfs.h>\n#endif' fs/dcache.c || true
           fi
 
-          echo ""
-          echo "=== Fix 3: Dinh nghia macro SUSFS neu thieu ==="
-          if ! grep -rq "INODE_STATE_SUS_PATH" include/linux/fs.h 2>/dev/null; then
-            if [ -f include/linux/fs.h ]; then
-              sed -i '/^#endif \/\* _LINUX_FS_H \*\//i #ifdef CONFIG_KSU_SUSFS\n#ifndef INODE_STATE_SUS_PATH\n#define INODE_STATE_SUS_PATH (1 << 16)\n#endif\n#endif' include/linux/fs.h || true
-              echo "-> da them INODE_STATE_SUS_PATH vao include/linux/fs.h"
-            fi
-          else
-            echo "-> INODE_STATE_SUS_PATH da ton tai"
+          # Fix 3: macro INODE_STATE_SUS_PATH
+          if [ -f include/linux/fs.h ] && ! grep -q "INODE_STATE_SUS_PATH" include/linux/fs.h; then
+            sed -i '/^#endif \/\* _LINUX_FS_H \*\//i #ifdef CONFIG_KSU_SUSFS\n#ifndef INODE_STATE_SUS_PATH\n#define INODE_STATE_SUS_PATH (1 << 16)\n#endif\n#endif' include/linux/fs.h || true
           fi
 
-          if ! grep -rq "TASK_STRUCT_NON_ROOT_USER_APP_PROC" include/linux/sched.h 2>/dev/null; then
-            if [ -f include/linux/sched.h ]; then
-              sed -i '/^#endif \/\* _LINUX_SCHED_H \*\//i #ifdef CONFIG_KSU_SUSFS\n#ifndef TASK_STRUCT_NON_ROOT_USER_APP_PROC\n#define TASK_STRUCT_NON_ROOT_USER_APP_PROC (1 << 0)\n#endif\n#endif' include/linux/sched.h || true
-              echo "-> da them TASK_STRUCT_NON_ROOT_USER_APP_PROC vao include/linux/sched.h"
-            fi
-          else
-            echo "-> TASK_STRUCT_NON_ROOT_USER_APP_PROC da ton tai"
+          # Fix 4: macro TASK_STRUCT_NON_ROOT_USER_APP_PROC
+          if [ -f include/linux/sched.h ] && ! grep -q "TASK_STRUCT_NON_ROOT_USER_APP_PROC" include/linux/sched.h; then
+            sed -i '/^#endif \/\* _LINUX_SCHED_H \*\//i #ifdef CONFIG_KSU_SUSFS\n#ifndef TASK_STRUCT_NON_ROOT_USER_APP_PROC\n#define TASK_STRUCT_NON_ROOT_USER_APP_PROC (1 << 0)\n#endif\n#endif' include/linux/sched.h || true
           fi
 
-          echo ""
-          echo "=== Verify patch ==="
-          grep -n "MODULE_IMPORT_NS" drivers/kernelsu/core/init.c 2>/dev/null || echo "(init.c khong con MODULE_IMPORT_NS)"
-          grep -n "susfs.h" fs/dcache.c 2>/dev/null || echo "(dcache.c chua co susfs.h)"
-          grep -rn "INODE_STATE_SUS_PATH\|TASK_STRUCT_NON_ROOT_USER_APP_PROC" include/linux/fs.h include/linux/sched.h 2>/dev/null || echo "(macro chua duoc dinh nghia)"
-
-      - name: Patch FinaSU file_wrapper.c for kernel 4.19
-        shell: bash
+      - name: Patch file_wrapper.c for kernel 4.19
         run: |
           set -e
           F=$(find . -name "file_wrapper.c" | head -1)
@@ -87,38 +55,25 @@ jobs:
           fi
           echo "Patching: $F"
 
-          cat > /tmp/patch_fw.py <<'PYEOF'
-import sys, re
+          # Sua iopoll (kernel >= 5.1)
+          sed -i 's|return orig->f_op->iopoll(kiocb, spin);|#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n    return orig->f_op->iopoll(kiocb, spin);\n#else\n    return -EOPNOTSUPP;\n#endif|' "$F" || true
 
-path = sys.argv[1]
-with open(path, 'r', errors='ignore') as f:
-    src = f.read()
+          # Sua iopoll trong wrapper ops
+          sed -i 's|p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;|#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n    p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;\n#endif|' "$F" || true
 
-src = re.sub(
-    r'return\s+orig->f_op->iopoll\(kiocb,\s*spin\);',
-    '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n    return orig->f_op->iopoll(kiocb, spin);\n#else\n    return -EOPNOTSUPP;\n#endif',
-    src
-)
-
-src = re.sub(
-    r'if\s*\(remap_flags\s*&\s*REMAP_FILE_DEDUP\)\s*\{[^}]*\}\s*else\s*\{[^}]*\}',
-    '#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\n    if (remap_flags & REMAP_FILE_DEDUP) { return -EOPNOTSUPP; }\n    return orig->f_op->remap_file_range(file_in, pos_in, orig, pos_out, len, remap_flags);\n#else\n    return -EOPNOTSUPP;\n#endif',
-    src,
-    flags=re.S
-)
-
-src = re.sub(
-    r'p->ops\.iopoll\s*=\s*fp->f_op->iopoll\s*\?\s*ksu_wrapper_iopoll\s*:\s*NULL;',
-    '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n    p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;\n#endif',
-    src
-)
-
-with open(path, 'w') as f:
-    f.write(src)
-print("PATCHED OK")
-PYEOF
-
-          python3 /tmp/patch_fw.py "$F"
+          # Sua remap_file_range block: thay ca block bang phien ban 4.19 an toan
+          # Dung python vi block nhieu dong, nhung viet ra file tam bang printf de tranh heredoc
+          printf '%s\n' \
+            'import sys, re' \
+            'p = sys.argv[1]' \
+            's = open(p, errors="ignore").read()' \
+            'pat = r"if\\s*\\(remap_flags\\s*&\\s*REMAP_FILE_DEDUP\\)\\s*\\{[^}]*\\}\\s*else\\s*\\{[^}]*\\}"' \
+            'rep = "#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\\n    if (remap_flags & REMAP_FILE_DEDUP) { return -EOPNOTSUPP; }\\n    return orig->f_op->remap_file_range(file_in, pos_in, orig, pos_out, len, remap_flags);\\n#else\\n    return -EOPNOTSUPP;\\n#endif"' \
+            's = re.sub(pat, rep, s, flags=re.S)' \
+            'open(p, "w").write(s)' \
+            'print("remap patch done")' \
+            > /tmp/p.py
+          python3 /tmp/p.py "$F"
 
           echo "=== Verify ==="
           grep -n "iopoll\|remap_file_range\|REMAP_FILE_DEDUP" "$F" || true
@@ -144,9 +99,7 @@ PYEOF
           sudo ln -sf /usr/bin/llvm-objdump-14 /usr/local/bin/llvm-objdump
           sudo ln -sf /usr/bin/llvm-strip-14 /usr/local/bin/llvm-strip
 
-          echo "=== Clang ==="
           clang --version | head -1
-          echo "=== GCC cross ==="
           aarch64-linux-gnu-gcc --version | head -1
 
       - name: Prepare output dir
@@ -169,7 +122,6 @@ PYEOF
 
           make O=out ARCH=arm64 vendor/mt6768_defconfig
 
-          echo "=== Merge merlin.config ==="
           ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m \
             out/.config \
             arch/arm64/configs/vendor/merlin.config
@@ -201,9 +153,7 @@ PYEOF
           EOF
 
           make O=out ARCH=arm64 olddefconfig
-
-          echo "=== KIEM TRA CONFIG QUAN TRONG ==="
-          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_KALLSYMS|CONFIG_LTO_CLANG|CONFIG_CFI_CLANG" out/.config || true
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_KALLSYMS" out/.config || true
 
       - name: Build kernel (Clang 14)
         run: |
@@ -212,7 +162,6 @@ PYEOF
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          echo "=== Clang dang dung ==="
           clang --version | head -1
 
           set -o pipefail
@@ -231,14 +180,11 @@ PYEOF
         if: failure()
         run: |
           if [ ! -f build.log ]; then
-            echo "build.log KHONG TON TAI - build fail truoc buoc Build kernel"
+            echo "build.log KHONG TON TAI"
             exit 0
           fi
           echo "======== error: DAU TIEN ========"
           grep -n -B10 -A15 "error:" build.log | head -200 || echo "(khong co error:)"
-          echo ""
-          echo "======== Error 1/2 ========"
-          grep -n -B5 -A5 "Error [12]" build.log | head -100 || true
           echo ""
           echo "======== 150 dong cuoi ========"
           tail -150 build.log || true
