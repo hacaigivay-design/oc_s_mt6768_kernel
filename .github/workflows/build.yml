@@ -21,32 +21,22 @@ jobs:
           ls -la FinaSU/ 2>/dev/null || echo "FinaSU KHONG TON TAI!"
           echo "=== Kiem tra init.c ==="
           ls -la FinaSU/kernel/core/init.c 2>/dev/null || echo "init.c KHONG TON TAI!"
-          echo "=== Tim MODULE_IMPORT_NS ==="
-          grep -rn "MODULE_IMPORT_NS" FinaSU/ 2>/dev/null || echo "(khong thay)"
 
       - name: Patch FinaSU for kernel 4.19
         run: |
           set -e
 
-          # --- Fix MODULE_IMPORT_NS trong init.c (hardcode duong dan) ---
+          # --- Fix MODULE_IMPORT_NS trong init.c ---
           INIT_C="FinaSU/kernel/core/init.c"
           if [ -f "$INIT_C" ]; then
             echo "Patching MODULE_IMPORT_NS in: $INIT_C"
-            # Xoa ca khoi #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0) ... #endif
-            # chua MODULE_IMPORT_NS, thay bang comment
             perl -0777 -i -pe 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION\(6, 13, 0\)\s*\n\s*MODULE_IMPORT_NS\([^)]*\);\s*\n#else\s*\n\s*MODULE_IMPORT_NS\([^)]*\);\s*\n#endif/\/\* MODULE_IMPORT_NS removed for 4.19 \*\//gs' "$INIT_C" || true
-            # Fallback: xoa tung dong MODULE_IMPORT_NS con lai
             perl -i -ne 'print unless /MODULE_IMPORT_NS/' "$INIT_C" || true
             echo "=== Verify $INIT_C ==="
             grep -n "MODULE_IMPORT_NS" "$INIT_C" && echo "VAN CON!" || echo "(da xoa sach)"
-            echo "=== 5 dong cuoi ==="
-            tail -5 "$INIT_C"
           else
             echo "CANH BAO: $INIT_C khong ton tai!"
-            echo "=== Liet ke file init.c trong FinaSU ==="
             find FinaSU -name "init.c" 2>/dev/null
-            echo "=== Liet ke toan bo FinaSU ==="
-            find FinaSU -maxdepth 3 -type d 2>/dev/null | head -20
           fi
 
           # --- Fix fs/dcache.c susfs include ---
@@ -78,11 +68,38 @@ jobs:
           sed -i 's|^\(\s*\)p->ops\.remap_file_range = fp->f_op->remap_file_range ? ksu_wrapper_remap_file_range : NULL;|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\n\1p->ops.remap_file_range = fp->f_op->remap_file_range ? ksu_wrapper_remap_file_range : NULL;\n\1#endif|' "$F" || true
           sed -i 's|^\(\s*\)return orig->f_op->iopoll(kiocb, spin);|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n\1return orig->f_op->iopoll(kiocb, spin);\n\1#else\n\1return -EOPNOTSUPP;\n\1#endif|' "$F" || true
           sed -i 's|^\(\s*\)return orig->f_op->iopoll(kiocb, icb, v);|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)\n\1return orig->f_op->iopoll(kiocb, icb, v);\n\1#else\n\1return -EOPNOTSUPP;\n\1#endif|' "$F" || true
-          sed -i 's|^\(\s*\)return orig->f_op->remap_file_range(file_in, pos_in, orig, pos_out, len, remap_flags);|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\n\1return orig->f_op->remap_file_range(file_in, pos_in, orig, pos_out, len, remap_flags);\n\1#else\n\1return -EOPNOTSUPP;\n\1#endif|' "$F" || true
-          sed -i 's|^\(\s*\)return orig->f_op->remap_file_range(orig, pos_in, file_out, pos_out, len, remap_flags);|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\n\1return orig->f_op->remap_file_range(orig, pos_in, file_out, pos_out, len, remap_flags);\n\1#else\n\1return -EOPNOTSUPP;\n\1#endif|' "$F" || true
+
+          perl -0777 -i -pe '
+            s{
+              static\s+loff_t\s+ksu_wrapper_remap_file_range\s*\([^)]*\)\s*\{
+                .*?
+              \}
+            }{
+              #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)
+              static loff_t ksu_wrapper_remap_file_range(struct file *file_in, loff_t pos_in, struct file *file_out, loff_t pos_out, loff_t len, unsigned int remap_flags)
+              {
+                  if (remap_flags & REMAP_FILE_DEDUP) {
+                      struct ksu_file_wrapper *data = file_out->private_data;
+                      struct file *orig = data->orig;
+                      return orig->f_op->remap_file_range(file_in, pos_in, orig, pos_out, len, remap_flags);
+                  } else {
+                      struct ksu_file_wrapper *data = file_in->private_data;
+                      struct file *orig = data->orig;
+                      return orig->f_op->remap_file_range(orig, pos_in, file_out, pos_out, len, remap_flags);
+                  }
+              }
+              #else
+              static loff_t ksu_wrapper_remap_file_range(struct file *file_in, loff_t pos_in, struct file *file_out, loff_t pos_out, loff_t len, unsigned int remap_flags)
+              {
+                  (void)file_in; (void)pos_in; (void)file_out; (void)pos_out; (void)len; (void)remap_flags;
+                  return -EOPNOTSUPP;
+              }
+              #endif
+            }sx
+          ' "$F" || true
 
           echo "=== Verify ==="
-          grep -n -B1 -A1 "iopoll\|remap_file_range" "$F" | head -40
+          grep -n "iopoll\|remap_file_range\|REMAP_FILE_DEDUP" "$F" | head -40
 
       - name: Patch seccomp_cache.c for kernel 4.19
         run: |
