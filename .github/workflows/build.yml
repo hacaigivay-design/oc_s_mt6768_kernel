@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-20.04  # Chuyển sang Ubuntu 20.04 để dùng GCC 9/10 ổn định hơn
     timeout-minutes: 360
 
     steps:
@@ -38,20 +38,24 @@ jobs:
           ARCH=arm64 scripts/kconfig/merge_config.sh -O out \
             out/.config \
             arch/arm64/configs/vendor/merlin.config
+          
+          echo "Bước 3: Ép bật DTB Overlay cho merlin (nếu bị thiếu)..."
+          # Đảm bảo config nhận đúng tên thiết bị
+          echo "CONFIG_BUILD_ARM64_DTB_OVERLAY_IMAGE_NAMES=\"mediatek/merlin\"" >> out/.config
+          echo "CONFIG_ARCH_MTK_PROJECT=\"merlin\"" >> out/.config
 
-      - name: Build kernel (Using GCC - Disable strict errors)
+      - name: Build kernel (Using GCC 10)
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
-          # Tắt tính năng coi cảnh báo là lỗi của GCC
-          export KCFLAGS="-Wno-error -Wno-strict-prototypes -Wno-incompatible-pointer-types"
-          export KBUILD_CFLAGS="-Wno-error -Wno-strict-prototypes -Wno-incompatible-pointer-types"
-          
-          echo "Bắt đầu build kernel bằng GCC (bỏ qua cảnh báo)..."
-          make O=out ARCH=arm64 -j$(nproc) KCFLAGS="$KCFLAGS" KBUILD_CFLAGS="$KBUILD_CFLAGS"
+          echo "Bắt đầu build kernel bằng GCC..."
+          # Thêm các cờ bỏ qua cảnh báo để build mượt hơn
+          make O=out ARCH=arm64 -j$(nproc) \
+            KCFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-strict-prototypes" \
+            KBUILD_CFLAGS="-Wno-error -Wno-incompatible-pointer-types -Wno-strict-prototypes"
 
       - name: Upload kernel artifacts
         if: success()
