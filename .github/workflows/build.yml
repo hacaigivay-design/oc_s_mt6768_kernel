@@ -1,7 +1,7 @@
 name: Build MT6768 Kernel
 
 on:
-  workflow_dispatch:   # cho phép bấm chạy tay từ tab Actions
+  workflow_dispatch:
 
 jobs:
   build:
@@ -14,25 +14,14 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install build dependencies
+      - name: Install build dependencies & Clang
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential bc bison flex libssl-dev libelf-dev \
             python3 python3-pip zip unzip git curl wget \
-            device-tree-compiler lz4 xz-utils zstd cpio rsync
-
-      - name: Download Clang Toolchain
-        run: |
-          mkdir -p $HOME/toolchain/clang
-          cd $HOME/toolchain/clang
-          # Dùng Clang r416183b ổn định cho kernel 4.19
-          wget -q https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b/archive/refs/heads/lineage-19.1.tar.gz
-          tar -xzf lineage-19.1.tar.gz
-          # Di chuyển thư mục clang ra ngoài cho gọn
-          mv android_prebuilts_clang_kernel_linux-x86_clang-r416183b-lineage-19.1/* ./
-          rm -rf android_prebuilts_clang_kernel_linux-x86_clang-r416183b-lineage-19.1*
-          echo "$HOME/toolchain/clang/bin" >> $GITHUB_PATH
+            device-tree-compiler lz4 xz-utils zstd cpio rsync \
+            clang gcc-aarch64-linux-gnu
 
       - name: Prepare output dir
         run: mkdir -p out
@@ -41,7 +30,7 @@ jobs:
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
-          # LƯU Ý: Thay <TEN_DEFCONFIG> bằng tên defconfig máy bạn (vd: mt6768, ginkgo...)
+          # NHỚ SỬA <TEN_DEFCONFIG> THÀNH TÊN FILE DEFCONFIG CỦA MÁY BẠN
           make O=out ARCH=arm64 <TEN_DEFCONFIG>_defconfig
 
       - name: Build kernel
