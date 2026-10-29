@@ -49,81 +49,12 @@ jobs:
             exit 1
           fi
           echo "Patching: $F"
-
-          cat > /tmp/patch_fw.py << 'PYEOF'
-          import sys, re
-
-          path = sys.argv[1]
-          with open(path, 'r') as f:
-              src = f.read()
-
-          # 1. Boc TOAN BO cum ham ksu_wrapper_iopoll (ca #if 6.1 / #else / #endif)
-          #    va thay bang stub cho kernel < 5.1
-          pattern_iopoll_func = re.compile(
-              r'#if LINUX_VERSION_CODE >= KERNEL_VERSION\(6, 1, 0\)\s*'
-              r'static int ksu_wrapper_iopoll\(.*?#endif\s*',
-              re.S
-          )
-          stub_iopoll = '''#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
-static int ksu_wrapper_iopoll(struct kiocb *kiocb, struct io_comp_batch *icb, unsigned int v)
-{
-    struct ksu_file_wrapper *data = kiocb->ki_filp->private_data;
-    struct file *orig = data->orig;
-    kiocb->ki_filp = orig;
-    return orig->f_op->iopoll(kiocb, icb, v);
-}
-#else
-static int ksu_wrapper_iopoll(struct kiocb *kiocb, bool spin)
-{
-    struct ksu_file_wrapper *data = kiocb->ki_filp->private_data;
-    struct file *orig = data->orig;
-    kiocb->ki_filp = orig;
-    return orig->f_op->iopoll(kiocb, spin);
-}
-#endif
-#endif
-'''
-          if pattern_iopoll_func.search(src):
-              src = pattern_iopoll_func.sub(stub_iopoll, src)
-              print("-> patched ksu_wrapper_iopoll function")
-          else:
-              print("-> WARNING: khong tim thay ksu_wrapper_iopoll pattern")
-
-          # 2. Boc ca ham ksu_wrapper_remap_file_range bang #if >= 4.20
-          src = re.sub(
-              r'(static loff_t ksu_wrapper_remap_file_range\(.*?\n\}\n)',
-              r'#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\n\1#endif\n',
-              src,
-              flags=re.S
-          )
-
-          # 3. Boc dong p->ops.iopoll = ... bang #if >= 5.1
-          src = re.sub(
-              r'(\s*p->ops\.iopoll = fp->f_op->iopoll \? ksu_wrapper_iopoll : NULL;)',
-              r'\n#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\1\n#endif',
-              src
-          )
-
-          # 4. Boc dong p->ops.remap_file_range = ... bang #if >= 4.20
-          src = re.sub(
-              r'(\s*p->ops\.remap_file_range = fp->f_op->remap_file_range \? ksu_wrapper_remap_file_range : NULL;)',
-              r'\n#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\1\n#endif',
-              src
-          )
-
-          with open(path, 'w') as f:
-              f.write(src)
-          print("PATCHED OK")
-          PYEOF
+          echo "aW1wb3J0IHN5cywgcmUKCnBhdGggPSBzeXMuYXJndlsxXQp3aXRoIG9wZW4ocGF0aCwgJ3InKSBhcyBmOgogICAgc3JjID0gZi5yZWFkKCkKCiMgMS4gQm9jIHRvYW4gYm8gY3VuIGhhbSBrc3Vfd3JhcHBlcl9pb3BvbGwgKHZhIHRoYXkgYmFuZyBzdHViIGNobyA0LjE5KQpwYXR0ZXJuX2lvcG9sbCA9IHJlLmNvbXBpbGUoCiAgICByJyNpZiBMSU5VWF9WRVJTSU9OX0NPREUgPj0gS0VSTkVMX1ZFUlNJT05cKDYsIDEsIDBcKVxzKidcbiAgICByJ3N0YXRpYyBpbnQga3N1X3dyYXBwZXJfaW9wb2xsXCguKj8jZW5kaWZccyonLAogICAgcmUuUykKc3R1Yl9pb3BvbGwgPSAnJycjaWYgTElOVVhfVkVSU0lPTl9DT0RFID49IEtFUk5FTF9WRVJTSU9OKDUsIDEsIDApCiNpZiBMSU5VWF9WRVJTSU9OX0NPREUgPj0gS0VSTkVMX1ZFUlNJT05cKDYsIDEsIDApCnN0YXRpYyBpbnQga3N1X3dyYXBwZXJfaW9wb2xsKHN0cnVjdCBraW9jYiAqa2lvY2IsIHN0cnVjdCBpb19jb21wX2JhdGNoICppY2IsIHVuc2lnbmVkIGludCB2KQp7CiAgICBzdHJ1Y3Qga3N1X2ZpbGVfd3JhcHBlciAqZGF0YSA9IGtpb2NiLT5raV9maWxwLT5wcml2YXRlX2RhdGE7CiAgICBzdHJ1Y3QgZmlsZSAqb3JpZyA9IGRhdGEtPm9yaWc7CiAgICBraW9jYi0+a2lfZmlscCA9IG9yaWc7CiAgICByZXR1cm4gb3JpZy0+Zl9vcC0+aW9wb2xsKGtpb2NiLCBpY2IsIHYpOwp9CiNlbHNlCnN0YXRpYyBpbnQga3N1X3dyYXBwZXJfaW9wb2xsKHN0cnVjdCBraW9jYiAqa2lvY2IsIGJvb2wgc3BpbikKewogICAgc3RydWN0IGtzdV9maWxlX3dyYXBwZXIgKmRhdGEgPSBraW9jYi0+a2lfZmlscC0+cHJpdmF0ZV9kYXRhOwogICAgc3RydWN0IGZpbGUgKm9yaWcgPSBkYXRhLT5vcmlnOwogICAga2lvY2ItPmtpX2ZpbHAgPSBvcmlnOwogICAgcmV0dXJuIG9yaWctPmZfb3AtPmlvcG9sbChraW9jYiwgc3Bpbik7Cn0KI2VuZGlmCiNlbmRpZgonJycKaWYgcGF0dGVybl9pb3BvbGwuc2VhcmNoKHNyYyk6CiAgICBzcmMgPSBwYXR0ZXJuX2lvcG9sbC5zdWIoc3R1Yl9pb3BvbGwsIHNyYykKICAgIHByaW50KCI9PiBwYXRjaGVkIGtzdV93cmFwcGVyX2lvcG9sbCIpCmVsc2U6CiAgICBwcmludCgiPT4gV0FSTklORzoga2hvbmcgdGltIHRoYXkga3N1X3dyYXBwZXJfaW9wb2xsIikKCiMgMi4gQm9jIGNhIGhhbSBrc3Vfd3JhcHBlcl9yZW1hcF9maWxlX3JhbmdlIGJhbmcgI2lmID49IDQuMjAKc3JjID0gcmUuc3ViKAogICAgcicoW1xzXSpzdGF0aWMgbG9mZl90IGtzdV93cmFwcGVyX3JlbWFwX2ZpbGVfcmFuZ2VcKC4qP1xuXH1cbiknLAogICAgcicjaWYgTElOVVhfVkVSU0lPTl9DT0RFID49IEtFUk5FTF9WRVJTSU9OKDQsIDIwLCAwKVxuXDF8I2VuZGlmXG4nLAogICAgc3JjLAogICAgZmxhZ3M9cmUuUykKCiMgMy4gQm9jIGRvbmcgcC0+b3BzLmlvcG9sbCA9IC4uLgpkZWYgYm9jX2Rvb25nKG1hdGNoKToKICAgIGxpbmUgPSBtYXRjaC5ncm91cCgxKQogICAgcmV0dXJuICdcbiNpZiBMSU5VWF9WRVJTSU9OX0NPREUgPj0gS0VSTkVMX1ZFUlNJT05cKDUsIDEsIDBcKVxuJyArIGxpbmUgKyAnXG4jZW5kaWYnCgpzcmMgPSByZS5zdWIocicoXHMqcC0+b3BzXC5pb3BvbGwgPSBmcC0+Zl9vcC0+aW9wb2xsIFw/IGtzdV93cmFwcGVyX2lvcG9sbCA6IE5VTEw7KScsIGJvY19kb25nLCBzcmMpCgojIDQuIEJvYyBkb25nIHAgLT4gb3BzLnJlbWFwX2ZpbGVfcmFuZ2UKZGVmIGJvY19kb25nX3JlbWFwKG1hdGNoKToKICAgIGxpbmUgPSBtYXRjaC5ncm91cCgxKQogICAgcmV0dXJuICdcbiNpZiBMSU5VWF9WRVJTSU9OX0NPREUgPj0gS0VSTkVMX1ZFUlNJT05cKDQsIDIwLCAwXClcbicgKyBsaW5lICsgJ1xuI2VuZGlmJwoKc3JjID0gcmUuc3ViKHInKFxzKnAtPm9wc1wucmVtYXBfZmlsZV9yYW5nZSA9IGZwLT5mX29wLT5yZW1hcF9maWxlX3JhbmdlIFw/IGtzdV93cmFwcGVyX3JlbWFwX2ZpbGVfcmFuZ2UgOiBOVUxMOyknLCBib2NfZG9uZ19yZW1hcCwgc3JjKQoKd2l0aCBvcGVuKHBhdGgsICd3JykgYXMgZjoKICAgIGYud3JpdGUoc3JjKQpwcmludCgiUEFUQ0hFRCBPSyIpCg==" | base64 -d > /tmp/patch_fw.py
 
           python3 /tmp/patch_fw.py "$F"
 
           echo "=== Verify ==="
-          echo "--- iopoll ---"
-          grep -n "iopoll" "$F" | head -20
-          echo "--- remap_file_range ---"
-          grep -n "remap_file_range" "$F" | head -20
+          grep -n "iopoll\|remap_file_range" "$F" | head -20
 
       - name: Install dependencies + Clang 14 + GCC cross
         run: |
