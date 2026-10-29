@@ -1,0 +1,80 @@
+name: Build MT6768 Kernel
+
+on:
+  workflow_dispatch:   # cho phép bấm chạy tay từ tab Actions
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            python3 python3-pip zip unzip git curl wget \
+            device-tree-compiler lz4 xz-utils zstd cpio rsync
+
+      - name: Download AOSP Clang toolchain
+        run: |
+          mkdir -p $HOME/toolchain/clang
+          cd $HOME/toolchain/clang
+          # Clang r487747c (ổn định cho kernel 4.19/5.x). Nếu lỗi, đổi version khác.
+          curl -LO https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747c.tar.gz
+          tar -xzf clang-r487747c.tar.gz
+          rm clang-r487747c.tar.gz
+          echo "$HOME/toolchain/clang/bin" >> $GITHUB_PATH
+
+      - name: Download GCC AArch64 (fallback nếu cần)
+        run: |
+          mkdir -p $HOME/toolchain/gcc
+          cd $HOME/toolchain/gcc
+          # GCC 12 aarch64 từ ARM
+          wget -q https://developer.arm.com/-/media/Files/downloads/gnu/12.2.rel1/binrel/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+          tar -xf arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+          echo "$HOME/toolchain/gcc/arm-gnu-toolchain-12.2.rel1-x86_64-aarch64-none-linux-gnu/bin" >> $GITHUB_PATH
+
+      - name: Prepare output dir
+        run: mkdir -p out
+
+      - name: Configure kernel (defconfig)
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          make O=out ARCH=arm64 <TEN_DEFCONFIG>_defconfig
+
+      - name: Build kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          make O=out ARCH=arm64 -j$(nproc) \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-none-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-none-linux-gnueabi-
+
+      - name: Show build result
+        if: always()
+        run: |
+          ls -la out/arch/arm64/boot/ || true
+
+      - name: Upload kernel artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-mt6768
+          path: |
+            out/arch/arm64/boot/Image.gz-dtb
+            out/arch/arm64/boot/Image.gz
+            out/arch/arm64/boot/Image
+            out/arch/arm64/boot/dtb
+            out/arch/arm64/boot/dtb.img
+          if-no-files-found: warn
+          retention-days: 30
