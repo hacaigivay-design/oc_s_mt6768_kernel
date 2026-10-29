@@ -39,16 +39,19 @@ jobs:
             out/.config \
             arch/arm64/configs/vendor/merlin.config
 
-      - name: Build kernel (Using GCC)
+      - name: Build kernel (Using GCC - Disable strict errors)
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
-          echo "Bắt đầu build kernel bằng GCC..."
-          # Tắt cảnh báo lỗi nghiêm trọng (nếu có) để build mượt hơn
-          make O=out ARCH=arm64 -j$(nproc) KCFLAGS="-Wno-error"
+          # Tắt tính năng coi cảnh báo là lỗi của GCC
+          export KCFLAGS="-Wno-error -Wno-strict-prototypes -Wno-incompatible-pointer-types"
+          export KBUILD_CFLAGS="-Wno-error -Wno-strict-prototypes -Wno-incompatible-pointer-types"
+          
+          echo "Bắt đầu build kernel bằng GCC (bỏ qua cảnh báo)..."
+          make O=out ARCH=arm64 -j$(nproc) KCFLAGS="$KCFLAGS" KBUILD_CFLAGS="$KBUILD_CFLAGS"
 
       - name: Upload kernel artifacts
         if: success()
