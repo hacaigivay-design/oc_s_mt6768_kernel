@@ -25,23 +25,9 @@ jobs:
 
       - name: Patch kernel source (Fix mmu_notifier error)
         run: |
-          python3 -c "
-import os
-file_path = 'include/linux/mmu_notifier.h'
-if os.path.exists(file_path):
-    with open(file_path, 'r') as f:
-        lines = f.readlines()
-    new_lines = []
-    for line in lines:
-        if 'static inline void mmu_notifier_range_init' in line:
-            new_lines.append('enum mmu_notifier_event { MMU_NOTIFY_UNMAP = 0, MMU_NOTIFY_CLEAR, MMU_NOTIFY_PROTECTION_VMA, MMU_NOTIFY_PROTECTION_PAGE, MMU_NOTIFY_SOFT_DIRTY, MMU_NOTIFY_RELEASE, MMU_NOTIFY_MIGRATE };\n')
-        new_lines.append(line)
-    with open(file_path, 'w') as f:
-        f.writelines(new_lines)
-    print('Đã vá file mmu_notifier.h thành công!')
-else:
-    print('Không tìm thấy file mmu_notifier.h')
-"
+          echo "Đang vá lỗi mmu_notifier..."
+          sed -i '/static inline void mmu_notifier_range_init/i enum mmu_notifier_event { MMU_NOTIFY_UNMAP = 0, MMU_NOTIFY_CLEAR, MMU_NOTIFY_PROTECTION_VMA, MMU_NOTIFY_PROTECTION_PAGE, MMU_NOTIFY_SOFT_DIRTY, MMU_NOTIFY_RELEASE, MMU_NOTIFY_MIGRATE };' include/linux/mmu_notifier.h
+          echo "Vá thành công!"
 
       - name: Prepare output dir
         run: mkdir -p out
