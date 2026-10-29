@@ -77,6 +77,7 @@ jobs:
           grep -rn "INODE_STATE_SUS_PATH\|TASK_STRUCT_NON_ROOT_USER_APP_PROC" include/linux/fs.h include/linux/sched.h 2>/dev/null || echo "(macro chua duoc dinh nghia)"
 
       - name: Patch FinaSU file_wrapper.c for kernel 4.19
+        shell: bash
         run: |
           set -e
           F=$(find . -name "file_wrapper.c" | head -1)
@@ -86,21 +87,19 @@ jobs:
           fi
           echo "Patching: $F"
 
-          python3 - "$F" <<'PYEOF'
+          cat > /tmp/patch_fw.py <<'PYEOF'
 import sys, re
 
 path = sys.argv[1]
 with open(path, 'r', errors='ignore') as f:
     src = f.read()
 
-# 1. Boc iopoll (kernel >= 5.1)
 src = re.sub(
     r'return\s+orig->f_op->iopoll\(kiocb,\s*spin\);',
     '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n    return orig->f_op->iopoll(kiocb, spin);\n#else\n    return -EOPNOTSUPP;\n#endif',
     src
 )
 
-# 2. Boc remap_file_range + REMAP_FILE_DEDUP (kernel >= 4.20)
 src = re.sub(
     r'if\s*\(remap_flags\s*&\s*REMAP_FILE_DEDUP\)\s*\{[^}]*\}\s*else\s*\{[^}]*\}',
     '#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\n    if (remap_flags & REMAP_FILE_DEDUP) { return -EOPNOTSUPP; }\n    return orig->f_op->remap_file_range(file_in, pos_in, orig, pos_out, len, remap_flags);\n#else\n    return -EOPNOTSUPP;\n#endif',
@@ -108,7 +107,6 @@ src = re.sub(
     flags=re.S
 )
 
-# 3. Boc iopoll trong wrapper ops
 src = re.sub(
     r'p->ops\.iopoll\s*=\s*fp->f_op->iopoll\s*\?\s*ksu_wrapper_iopoll\s*:\s*NULL;',
     '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n    p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;\n#endif',
@@ -119,6 +117,8 @@ with open(path, 'w') as f:
     f.write(src)
 print("PATCHED OK")
 PYEOF
+
+          python3 /tmp/patch_fw.py "$F"
 
           echo "=== Verify ==="
           grep -n "iopoll\|remap_file_range\|REMAP_FILE_DEDUP" "$F" || true
