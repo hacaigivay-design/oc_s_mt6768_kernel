@@ -57,7 +57,40 @@ jobs:
           with open(path, 'r') as f:
               src = f.read()
 
-          # 1. Boc ca ham ksu_wrapper_remap_file_range bang #if >= 4.20
+          # 1. Boc TOAN BO cum ham ksu_wrapper_iopoll (ca #if 6.1 / #else / #endif)
+          #    va thay bang stub cho kernel < 5.1
+          pattern_iopoll_func = re.compile(
+              r'#if LINUX_VERSION_CODE >= KERNEL_VERSION\(6, 1, 0\)\s*'
+              r'static int ksu_wrapper_iopoll\(.*?#endif\s*',
+              re.S
+          )
+          stub_iopoll = '''#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+static int ksu_wrapper_iopoll(struct kiocb *kiocb, struct io_comp_batch *icb, unsigned int v)
+{
+    struct ksu_file_wrapper *data = kiocb->ki_filp->private_data;
+    struct file *orig = data->orig;
+    kiocb->ki_filp = orig;
+    return orig->f_op->iopoll(kiocb, icb, v);
+}
+#else
+static int ksu_wrapper_iopoll(struct kiocb *kiocb, bool spin)
+{
+    struct ksu_file_wrapper *data = kiocb->ki_filp->private_data;
+    struct file *orig = data->orig;
+    kiocb->ki_filp = orig;
+    return orig->f_op->iopoll(kiocb, spin);
+}
+#endif
+#endif
+'''
+          if pattern_iopoll_func.search(src):
+              src = pattern_iopoll_func.sub(stub_iopoll, src)
+              print("-> patched ksu_wrapper_iopoll function")
+          else:
+              print("-> WARNING: khong tim thay ksu_wrapper_iopoll pattern")
+
+          # 2. Boc ca ham ksu_wrapper_remap_file_range bang #if >= 4.20
           src = re.sub(
               r'(static loff_t ksu_wrapper_remap_file_range\(.*?\n\}\n)',
               r'#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\n\1#endif\n',
@@ -65,14 +98,14 @@ jobs:
               flags=re.S
           )
 
-          # 2. Boc dong p->ops.iopoll = ... bang #if >= 5.1
+          # 3. Boc dong p->ops.iopoll = ... bang #if >= 5.1
           src = re.sub(
               r'(\s*p->ops\.iopoll = fp->f_op->iopoll \? ksu_wrapper_iopoll : NULL;)',
               r'\n#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\1\n#endif',
               src
           )
 
-          # 3. Boc dong p->ops.remap_file_range = ... bang #if >= 4.20
+          # 4. Boc dong p->ops.remap_file_range = ... bang #if >= 4.20
           src = re.sub(
               r'(\s*p->ops\.remap_file_range = fp->f_op->remap_file_range \? ksu_wrapper_remap_file_range : NULL;)',
               r'\n#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\1\n#endif',
@@ -87,7 +120,10 @@ jobs:
           python3 /tmp/patch_fw.py "$F"
 
           echo "=== Verify ==="
-          grep -n -B1 -A1 "remap_file_range\|iopoll" "$F" | head -40
+          echo "--- iopoll ---"
+          grep -n "iopoll" "$F" | head -20
+          echo "--- remap_file_range ---"
+          grep -n "remap_file_range" "$F" | head -20
 
       - name: Install dependencies + Clang 14 + GCC cross
         run: |
