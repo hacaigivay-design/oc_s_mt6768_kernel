@@ -22,42 +22,55 @@ jobs:
             python3 python3-pip zip unzip git curl wget \
             device-tree-compiler lz4 xz-utils zstd cpio rsync \
             pahole kmod libc6-dev-i386 \
-            software-properties-common
+            clang lld llvm
 
       # ------------------------------------------------------------------
-      # Cai GCC 9 tu PPA Ubuntu (nhanh, on dinh hon AOSP clone)
+      # Tai AOSP Clang prebuilt (giong nguoi khac dung)
+      # Kernel 4.19 MTK dung Clang 12 hoac 14
       # ------------------------------------------------------------------
-      - name: Install GCC 9 from PPA
+      - name: Download AOSP Clang toolchain
         run: |
-          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
-          sudo apt-get update
-          sudo apt-get install -y \
-            gcc-9-aarch64-linux-gnu g++-9-aarch64-linux-gnu \
-            gcc-9-arm-linux-gnueabi g++-9-arm-linux-gnueabi
+          mkdir -p $HOME/toolchain
+          cd $HOME/toolchain
 
-          sudo ln -sf /usr/bin/aarch64-linux-gnu-gcc-9 /usr/local/bin/aarch64-linux-gnu-gcc
-          sudo ln -sf /usr/bin/aarch64-linux-gnu-g++-9 /usr/local/bin/aarch64-linux-gnu-g++
-          sudo ln -sf /usr/bin/arm-linux-gnueabi-gcc-9 /usr/local/bin/arm-linux-gnueabi-gcc
-          sudo ln -sf /usr/bin/arm-linux-gnueabi-g++-9 /usr/local/bin/arm-linux-gnueabi-g++
+          echo "=== Tai Clang 12 (on dinh cho kernel 4.19) ==="
+          git clone --depth=1 \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+            clang-aosp || echo "Clone that bai"
 
           echo "=== Kiem tra ==="
-          aarch64-linux-gnu-gcc --version | head -1
-          arm-linux-gnueabi-gcc --version | head -1
+          ls -d $HOME/toolchain/clang-aosp/clang-* 2>/dev/null || true
 
       - name: Prepare output dir
         run: mkdir -p out
 
-      - name: Configure kernel (mt6768_defconfig + merlin.config)
+      - name: Configure kernel
         run: |
+          # Tim thu muc clang moi nhat trong prebuilt
+          CLANG_DIR=$(ls -d $HOME/toolchain/clang-aosp/clang-* 2>/dev/null | sort -V | tail -1)
+          if [ -z "$CLANG_DIR" ]; then
+            echo "KHONG TIM THAY CLANG!"
+            ls -la $HOME/toolchain/clang-aosp/ || true
+            exit 1
+          fi
+
+          export PATH="$CLANG_DIR/bin:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          export CC=aarch64-linux-gnu-gcc-9
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
 
-          echo "=== Compiler ==="
-          which aarch64-linux-gnu-gcc
-          aarch64-linux-gnu-gcc --version | head -1
+          echo "=== Clang ==="
+          clang --version | head -1
+          ld.lld --version | head -1
 
           make O=out ARCH=arm64 vendor/mt6768_defconfig
 
@@ -73,23 +86,26 @@ jobs:
 
       - name: Build kernel
         run: |
+          CLANG_DIR=$(ls -d $HOME/toolchain/clang-aosp/clang-* 2>/dev/null | sort -V | tail -1)
+          export PATH="$CLANG_DIR/bin:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          echo "=== Compiler dang dung ==="
-          aarch64-linux-gnu-gcc --version | head -1
+          echo "=== Clang dang dung ==="
+          clang --version | head -1
 
           set -o pipefail
           make O=out ARCH=arm64 -j$(nproc) \
-            CC=aarch64-linux-gnu-gcc-9 \
-            LD=aarch64-linux-gnu-ld \
-            AR=aarch64-linux-gnu-ar \
-            NM=aarch64-linux-gnu-nm \
-            OBJCOPY=aarch64-linux-gnu-objcopy \
-            OBJDUMP=aarch64-linux-gnu-objdump \
-            STRIP=aarch64-linux-gnu-strip \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
             2>&1 | tee build.log | tail -300
 
       - name: Show errors if failed
