@@ -1,4 +1,4 @@
-name: Build MT6768 Kernel
+name: Build MT6768 Kernel for Merlin
 
 on:
   workflow_dispatch:
@@ -14,23 +14,12 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: List all defconfigs
-        run: |
-          echo "=== arch/arm64/configs/ ==="
-          ls arch/arm64/configs/ | grep -iE "merlin|mt6768|k68|lineage|vendor" || ls arch/arm64/configs/
-          echo ""
-          echo "=== arch/arm64/configs/vendor/ ==="
-          ls arch/arm64/configs/vendor/ 2>/dev/null || echo "KHONG CO"
-          echo ""
-          echo "=== Tìm file defconfig chứa 'merlin' ==="
-          grep -rl "merlin" arch/arm64/configs/ 2>/dev/null | head -20
-
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential bc bison flex libssl-dev libelf-dev \
-            python3 zip unzip git curl wget \
+            python3 python3-pip zip unzip git curl wget \
             device-tree-compiler lz4 xz-utils zstd cpio rsync \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
             gcc-arm-linux-gnueabi g++-arm-linux-gnueabi \
@@ -40,21 +29,27 @@ jobs:
       - name: Prepare output dir
         run: mkdir -p out
 
-      # ============================================================
-      # CHỈNH DÒNG NÀY sau khi xem output bước "List all defconfigs"
-      # Ví dụ: merlin_defconfig / vendor/merlin_defconfig / k6873v1_64_defconfig
-      # ============================================================
-      - name: Configure kernel
+      - name: Configure kernel (mt6768_defconfig + merlin.config)
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          make O=out ARCH=arm64 merlin_defconfig
-          # ↑ ĐỔI tên defconfig cho đúng sau khi xem output bước List
 
-          echo "=== Kiem tra config da sinh ==="
-          grep -E "CONFIG_ARCH_MEDIATEK|CONFIG_MTK|CONFIG_KVM=|CONFIG_BPF=|CONFIG_RCU_TASKS_TRACE|CONFIG_NFS_FS" out/.config || true
+          # 1) Defconfig gốc MT6768
+          make O=out ARCH=arm64 vendor/mt6768_defconfig
+
+          # 2) Merge fragment merlin
+          echo "=== Merge merlin.config ==="
+          ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m \
+            out/.config \
+            arch/arm64/configs/vendor/merlin.config
+
+          # 3) Resolve
+          make O=out ARCH=arm64 olddefconfig
+
+          echo "=== KIEM TRA CONFIG ==="
+          grep -E "CONFIG_ARCH_MEDIATEK|CONFIG_MTK|CONFIG_CC_OPTIMIZE|CONFIG_DEBUG_INFO=|CONFIG_KVM=|CONFIG_BPF=" out/.config || true
 
       - name: Build kernel
         run: |
@@ -69,9 +64,14 @@ jobs:
       - name: Show errors if failed
         if: failure()
         run: |
+          echo "======== error: DAU TIEN ========"
           grep -n -B10 -A15 "error:" build.log | head -200 || echo "(khong co error:)"
           echo ""
-          tail -100 build.log
+          echo "======== Error 1/2 ========"
+          grep -n -B5 -A5 "Error [12]" build.log | head -100 || true
+          echo ""
+          echo "======== 150 dong cuoi ========"
+          tail -150 build.log || true
 
       - name: Upload build log
         if: always()
@@ -85,9 +85,11 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel
+          name: kernel-merlin
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/Image.gz
             out/arch/arm64/boot/Image
+            out/arch/arm64/boot/dts/mediatek/*.dtb
+          if-no-files-found: warn
           retention-days: 30
