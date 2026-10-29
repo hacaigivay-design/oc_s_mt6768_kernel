@@ -1,4 +1,4 @@
-name: Build MT6768 Kernel for Merlin
+name: Build MT6768 Kernel for Merlin (FinaSU)
 
 on:
   workflow_dispatch:
@@ -13,6 +13,18 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      - name: Integrate FinaSU
+        run: |
+          echo "=== Chay setup.sh FinaSU (legacy / non-GKI) ==="
+          curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash -s legacy || \
+          curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash
+          echo ""
+          echo "=== Kiem tra thu muc KernelSU ==="
+          ls -la KernelSU/ 2>/dev/null || ls -la drivers/kernelsu/ 2>/dev/null || true
+          echo ""
+          echo "=== Kiem tra Kconfig da source chua ==="
+          grep -rn "KernelSU" Kconfig drivers/Kconfig 2>/dev/null || echo "CANH BAO: chua thay source Kconfig cua FinaSU"
 
       - name: Install dependencies + Clang 14 + GCC cross
         run: |
@@ -58,18 +70,45 @@ jobs:
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
 
-          # Buoc defconfig dung GCC cross de test compiler
+          # Buoc defconfig goc
           make O=out ARCH=arm64 vendor/mt6768_defconfig
 
-          echo "=== Merge merlin.config ==="
+          echo "=== Merge merlin.config (da chua block KSU + SUSFS) ==="
           ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m \
             out/.config \
             arch/arm64/configs/vendor/merlin.config
 
+          # Dam bao KSU duoc bat sau merge (ghi de neu bi thieu)
+          cat >> out/.config <<'EOF'
+          CONFIG_KSU=y
+          CONFIG_KSU_MANUAL_HOOK=y
+          CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_SUS_SU=y
+          CONFIG_KALLSYMS=y
+          CONFIG_KALLSYMS_ALL=y
+          CONFIG_KPROBES=y
+          CONFIG_NOMOUNT=y
+          EOF
+
           make O=out ARCH=arm64 olddefconfig
 
-          echo "=== KIEM TRA CONFIG ==="
-          grep -E "CONFIG_BLK_INLINE_ENCRYPTION|CONFIG_ARCH_MEDIATEK|CONFIG_CC_OPTIMIZE" out/.config || true
+          echo "=== KIEM TRA CONFIG QUAN TRONG ==="
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_KALLSYMS|CONFIG_LTO_CLANG|CONFIG_CFI_CLANG|CONFIG_ARCH_MEDIATEK" out/.config || true
 
       - name: Build kernel (Clang 14)
         run: |
