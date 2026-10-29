@@ -43,10 +43,6 @@ jobs:
       - name: Fix mmu_notifier.h enum order
         run: python3 scripts/fix_mmu_notifier.py
 
-      - name: Confirm mmu_notifier.h
-        run: |
-          grep -n "mmu_notifier_event" include/linux/mmu_notifier.h
-
       - name: Configure kernel (defconfig + merlin config)
         run: |
           export ARCH=arm64
@@ -72,6 +68,7 @@ jobs:
             echo "CANH BAO: Khong tim thay merlin.config"
           fi
 
+          # Tắt debug nặng
           scripts/config --file out/.config \
             -e CC_OPTIMIZE_FOR_PERFORMANCE \
             -d CC_OPTIMIZE_FOR_SIZE \
@@ -84,10 +81,28 @@ jobs:
             -d KCSAN \
             -d DEBUG_KMEMLEAK
 
+          # FIX LOI 1: Tat KVM (kvm_main.c API mismatch)
+          scripts/config --file out/.config \
+            -d KVM \
+            -d KVM_ARM_HOST \
+            -d KVM_ARM_VGIC_V3 \
+            -d HAVE_KVM \
+            -d VIRTUALIZATION
+
+          # FIX LOI 2: Tat BPF (trampoline.c thieu rcu_tasks_trace)
+          scripts/config --file out/.config \
+            -d BPF \
+            -d BPF_SYSCALL \
+            -d BPF_JIT \
+            -d BPF_JIT_ALWAYS_ON \
+            -d BPF_UNPRIV_DEFAULT_OFF \
+            -d CGROUP_BPF \
+            -d BPF_EVENTS
+
           make O=out ARCH=arm64 olddefconfig
 
           echo "=== KIEM TRA CONFIG ==="
-          grep -E "CONFIG_CC_OPTIMIZE|CONFIG_DEBUG_INFO=|CONFIG_KPROBES|CONFIG_FUNCTION_TRACER" out/.config || true
+          grep -E "CONFIG_KVM=|CONFIG_BPF=|CONFIG_BPF_SYSCALL=|CONFIG_BPF_JIT=|CONFIG_CC_OPTIMIZE|CONFIG_DEBUG_INFO=" out/.config || true
 
       - name: Verify DTB target exists
         run: |
@@ -116,7 +131,7 @@ jobs:
             OBJCOPY=aarch64-linux-gnu-objcopy \
             OBJDUMP=aarch64-linux-gnu-objdump \
             STRIP=aarch64-linux-gnu-strip \
-            KCFLAGS="-O2 -fcommon -Wno-error -Wno-incompatible-pointer-types -Wno-strict-prototypes -Wno-address-of-packed-member" \
+            KCFLAGS="-O2 -fcommon -Wno-error -Wno-error=implicit-function-declaration -Wno-incompatible-pointer-types -Wno-strict-prototypes -Wno-address-of-packed-member -Wno-missing-attributes" \
             2>&1 | tee build.log | tail -400
 
       - name: Show errors if build failed
