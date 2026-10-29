@@ -32,7 +32,6 @@ jobs:
 
           echo "=== Fix 1: MODULE_IMPORT_NS (chi co tu kernel 5.4) ==="
           if [ -f drivers/kernelsu/core/init.c ]; then
-            # Comment dong MODULE_IMPORT_NS neu co
             sed -i 's|^MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);|/* MODULE_IMPORT_NS not available on 4.19 */|' \
               drivers/kernelsu/core/init.c || true
             echo "-> da patch drivers/kernelsu/core/init.c"
@@ -43,7 +42,6 @@ jobs:
           echo ""
           echo "=== Fix 2: SUSFS macros trong fs/dcache.c ==="
           if [ -f fs/dcache.c ]; then
-            # Them include susfs.h neu chua co
             if ! grep -q "linux/susfs.h" fs/dcache.c; then
               sed -i '/#include <linux\/dcache.h>/a #ifdef CONFIG_KSU_SUSFS\n#include <linux\/susfs.h>\n#endif' fs/dcache.c || true
               echo "-> da them include susfs.h vao fs/dcache.c"
@@ -54,10 +52,8 @@ jobs:
 
           echo ""
           echo "=== Fix 3: Dinh nghia macro SUSFS neu thieu ==="
-          # INODE_STATE_SUS_PATH
           if ! grep -rq "INODE_STATE_SUS_PATH" include/linux/fs.h 2>/dev/null; then
             if [ -f include/linux/fs.h ]; then
-              # Chen sau dong include cuoi cung cua fs.h
               sed -i '/^#endif \/\* _LINUX_FS_H \*\//i #ifdef CONFIG_KSU_SUSFS\n#ifndef INODE_STATE_SUS_PATH\n#define INODE_STATE_SUS_PATH (1 << 16)\n#endif\n#endif' include/linux/fs.h || true
               echo "-> da them INODE_STATE_SUS_PATH vao include/linux/fs.h"
             fi
@@ -65,7 +61,6 @@ jobs:
             echo "-> INODE_STATE_SUS_PATH da ton tai"
           fi
 
-          # TASK_STRUCT_NON_ROOT_USER_APP_PROC
           if ! grep -rq "TASK_STRUCT_NON_ROOT_USER_APP_PROC" include/linux/sched.h 2>/dev/null; then
             if [ -f include/linux/sched.h ]; then
               sed -i '/^#endif \/\* _LINUX_SCHED_H \*\//i #ifdef CONFIG_KSU_SUSFS\n#ifndef TASK_STRUCT_NON_ROOT_USER_APP_PROC\n#define TASK_STRUCT_NON_ROOT_USER_APP_PROC (1 << 0)\n#endif\n#endif' include/linux/sched.h || true
@@ -80,6 +75,53 @@ jobs:
           grep -n "MODULE_IMPORT_NS" drivers/kernelsu/core/init.c 2>/dev/null || echo "(init.c khong con MODULE_IMPORT_NS)"
           grep -n "susfs.h" fs/dcache.c 2>/dev/null || echo "(dcache.c chua co susfs.h)"
           grep -rn "INODE_STATE_SUS_PATH\|TASK_STRUCT_NON_ROOT_USER_APP_PROC" include/linux/fs.h include/linux/sched.h 2>/dev/null || echo "(macro chua duoc dinh nghia)"
+
+      - name: Patch FinaSU file_wrapper.c for kernel 4.19
+        run: |
+          set -e
+          F=$(find . -name "file_wrapper.c" | head -1)
+          if [ -z "$F" ]; then
+            echo "KHONG TIM THAY file_wrapper.c"
+            exit 1
+          fi
+          echo "Patching: $F"
+
+          python3 - "$F" <<'PYEOF'
+import sys, re
+
+path = sys.argv[1]
+with open(path, 'r', errors='ignore') as f:
+    src = f.read()
+
+# 1. Boc iopoll (kernel >= 5.1)
+src = re.sub(
+    r'return\s+orig->f_op->iopoll\(kiocb,\s*spin\);',
+    '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n    return orig->f_op->iopoll(kiocb, spin);\n#else\n    return -EOPNOTSUPP;\n#endif',
+    src
+)
+
+# 2. Boc remap_file_range + REMAP_FILE_DEDUP (kernel >= 4.20)
+src = re.sub(
+    r'if\s*\(remap_flags\s*&\s*REMAP_FILE_DEDUP\)\s*\{[^}]*\}\s*else\s*\{[^}]*\}',
+    '#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\n    if (remap_flags & REMAP_FILE_DEDUP) { return -EOPNOTSUPP; }\n    return orig->f_op->remap_file_range(file_in, pos_in, orig, pos_out, len, remap_flags);\n#else\n    return -EOPNOTSUPP;\n#endif',
+    src,
+    flags=re.S
+)
+
+# 3. Boc iopoll trong wrapper ops
+src = re.sub(
+    r'p->ops\.iopoll\s*=\s*fp->f_op->iopoll\s*\?\s*ksu_wrapper_iopoll\s*:\s*NULL;',
+    '#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n    p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;\n#endif',
+    src
+)
+
+with open(path, 'w') as f:
+    f.write(src)
+print("PATCHED OK")
+PYEOF
+
+          echo "=== Verify ==="
+          grep -n "iopoll\|remap_file_range\|REMAP_FILE_DEDUP" "$F" || true
 
       - name: Install dependencies + Clang 14 + GCC cross
         run: |
@@ -132,7 +174,6 @@ jobs:
             out/.config \
             arch/arm64/configs/vendor/merlin.config
 
-          # Dam bao KSU config
           cat >> out/.config <<'EOF'
           CONFIG_KSU=y
           CONFIG_KSU_MANUAL_HOOK=y
