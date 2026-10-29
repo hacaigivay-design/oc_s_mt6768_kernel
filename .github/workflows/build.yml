@@ -14,9 +14,6 @@ jobs:
         with:
           fetch-depth: 1
 
-      # ------------------------------------------------------------------
-      # 1) Dependencies + GCC-10 + symlink (fix 'compiler not found')
-      # ------------------------------------------------------------------
       - name: Install build dependencies & toolchain
         run: |
           sudo apt-get update
@@ -43,65 +40,13 @@ jobs:
       - name: Prepare output dir
         run: mkdir -p out
 
-      # ------------------------------------------------------------------
-      # 2) FIX mmu_notifier.h: đảm bảo enum mmu_notifier_event
-      #    được định nghĩa TRƯỚC khi được dùng (lỗi dòng 346)
-      # ------------------------------------------------------------------
       - name: Fix mmu_notifier.h enum order
+        run: python3 scripts/fix_mmu_notifier.py
+
+      - name: Confirm mmu_notifier.h
         run: |
-          python3 - <<'PY'
-          import sys, re
-          p = "include/linux/mmu_notifier.h"
-          s = open(p).read()
-
-          # Nếu đã có định nghĩa enum đầy đủ → không đụng
-          if re.search(r'enum\s+mmu_notifier_event\s*\{', s):
-              print("✓ enum mmu_notifier_event đã được định nghĩa — không patch")
-              sys.exit(0)
-
-          lines = s.split("\n")
-
-          # Tìm dòng đầu tiên DÙNG enum (không phải định nghĩa)
-          idx_use = None
-          for i, ln in enumerate(lines):
-              if "enum mmu_notifier_event" in ln and "{" not in ln:
-                  idx_use = i
-                  break
-
-          if idx_use is None:
-              print("✗ Không tìm thấy chỗ dùng enum — bỏ qua")
-              sys.exit(0)
-
-          enum_def = """enum mmu_notifier_event {
-	MMU_NOTIFY_UNMAP = 0,
-	MMU_NOTIFY_CLEAR,
-	MMU_NOTIFY_PROTECTION_VMA,
-	MMU_NOTIFY_PROTECTION_PAGE,
-	MMU_NOTIFY_SOFT_DIRTY,
-	MMU_NOTIFY_RELEASE,
-	MMU_NOTIFY_MIGRATE,
-};
-"""
-
-          # Chèn ngay TRƯỚC khối struct/function chứa dòng dùng
-          insert_at = idx_use
-          for j in range(idx_use, -1, -1):
-              st = lines[j].lstrip()
-              if st.startswith("struct ") or st.startswith("static inline") or st.startswith("void "):
-                  insert_at = j
-                  break
-
-          lines.insert(insert_at, enum_def)
-          open(p, "w").write("\n".join(lines))
-          print(f"✓ Chèn enum tại dòng {insert_at+1} (trước chỗ dùng dòng {idx_use+1})")
-          PY
-
-          echo "=== Xác nhận sau patch ==="
           grep -n "mmu_notifier_event" include/linux/mmu_notifier.h
 
-      # ------------------------------------------------------------------
-      # 3) Configure kernel
-      # ------------------------------------------------------------------
       - name: Configure kernel (defconfig + merlin config)
         run: |
           export ARCH=arm64
@@ -124,7 +69,7 @@ jobs:
               out/.config \
               arch/arm64/configs/vendor/merlin.config
           else
-            echo "CẢNH BÁO: Không tìm thấy merlin.config"
+            echo "CANH BAO: Khong tim thay merlin.config"
           fi
 
           scripts/config --file out/.config \
@@ -141,23 +86,20 @@ jobs:
 
           make O=out ARCH=arm64 olddefconfig
 
-          echo "=== KIỂM TRA CONFIG ==="
+          echo "=== KIEM TRA CONFIG ==="
           grep -E "CONFIG_CC_OPTIMIZE|CONFIG_DEBUG_INFO=|CONFIG_KPROBES|CONFIG_FUNCTION_TRACER" out/.config || true
 
       - name: Verify DTB target exists
         run: |
           echo "=== File merlin trong DTS ==="
-          find arch/arm64/boot/dts/mediatek -iname "*merlin*" 2>/dev/null || echo "KHÔNG có merlin*!"
+          find arch/arm64/boot/dts/mediatek -iname "*merlin*" 2>/dev/null || echo "KHONG co merlin*!"
           echo ""
           echo "=== CONFIG DTB/MTK ==="
           grep -iE "CONFIG_ARCH_MEDIATEK|CONFIG_BUILD_ARM64_DTB|MTK_PROJECT|CONFIG_ARCH_MTK" out/.config || true
           echo ""
           echo "=== Makefile DTB ==="
-          grep -n "merlin" arch/arm64/boot/dts/mediatek/Makefile 2>/dev/null || echo "Không có 'merlin' trong Makefile DTB"
+          grep -n "merlin" arch/arm64/boot/dts/mediatek/Makefile 2>/dev/null || echo "Khong co 'merlin' trong Makefile DTB"
 
-      # ------------------------------------------------------------------
-      # 4) Build (log ngắn để không bị truncate)
-      # ------------------------------------------------------------------
       - name: Build kernel (GCC-10)
         run: |
           export ARCH=arm64
@@ -180,13 +122,13 @@ jobs:
       - name: Show errors if build failed
         if: failure()
         run: |
-          echo "════════ error: ĐẦU TIÊN ════════"
-          grep -n -B10 -A15 "error:" build.log | head -200 || echo "(không có 'error:')"
+          echo "======== error: DAU TIEN ========"
+          grep -n -B10 -A15 "error:" build.log | head -200 || echo "(khong co 'error:')"
           echo ""
-          echo "════════ Error 1/2 ════════"
+          echo "======== Error 1/2 ========"
           grep -n -B5 -A5 "Error [12]" build.log | head -100 || true
           echo ""
-          echo "════════ 150 dòng cuối ════════"
+          echo "======== 150 dong cuoi ========"
           tail -150 build.log || true
 
       - name: Upload build log
