@@ -1,7 +1,7 @@
-name: Build MT6768 Kernel
+name: Build MT6768 Kernel for Merlin
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:   # Cho phép bấm chạy tay từ tab Actions
 
 jobs:
   build:
@@ -26,17 +26,25 @@ jobs:
       - name: Prepare output dir
         run: mkdir -p out
 
-      - name: Configure kernel (defconfig)
+      - name: Configure kernel (Base defconfig + Merlin config)
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
-          # NHỚ SỬA <TEN_DEFCONFIG> THÀNH TÊN FILE DEFCONFIG CỦA MÁY BẠN
-          make O=out ARCH=arm64 <mt6768_defconfig>_defconfig
+          
+          echo "Bước 1: Tạo base config..."
+          make O=out ARCH=arm64 defconfig
+          
+          echo "Bước 2: Gộp cấu hình merlin.config..."
+          ARCH=arm64 scripts/kconfig/merge_config.sh -O out \
+            out/.config \
+            arch/arm64/configs/vendor/merlin.config
 
       - name: Build kernel
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
+          
+          echo "Bắt đầu build kernel..."
           make O=out ARCH=arm64 -j$(nproc) \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -47,7 +55,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-mt6768
+          name: kernel-merlin
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/Image.gz
