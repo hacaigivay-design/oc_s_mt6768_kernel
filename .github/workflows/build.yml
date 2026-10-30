@@ -43,38 +43,36 @@ jobs:
       - name: Prepare output dir
         run: mkdir -p out
 
-      - name: Setup FinaSU & Apply Critical Fixes
+      - name: Setup FinaSU & Apply Fixes/Patches
         run: |
-          set -x # Bật chế độ debug để log hiển thị chính xác lệnh nào đang chạy
-
           echo "=== 1. Running FinaSU setup.sh ==="
           curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash
 
-          echo "=== 2. CRITICAL FIX: Removing MODULE_IMPORT_NS for non-GKI ==="
-          # Xóa trực tiếp dòng gây lỗi trong file init.c (đường dẫn chính xác theo log lỗi của bạn)
-          if [ -f "drivers/kernelsu/core/init.c" ]; then
-            sed -i '/MODULE_IMPORT_NS.*VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver/d' drivers/kernelsu/core/init.c
-            echo "[+] Successfully removed MODULE_IMPORT_NS from drivers/kernelsu/core/init.c"
-          else
-            echo "[-] WARNING: drivers/kernelsu/core/init.c not found!"
-          fi
-
-          # Dự phòng: Xóa cả trong file ksu.c nếu có
-          if [ -f "drivers/kernelsu/ksu.c" ]; then
-            sed -i '/MODULE_IMPORT_NS.*VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver/d' drivers/kernelsu/ksu.c
-            echo "[+] Successfully removed MODULE_IMPORT_NS from drivers/kernelsu/ksu.c"
-          fi
-
-          echo "=== 3. Disabling enable_sucompat() ==="
-          # Tìm và comment hàm enable_sucompat() trong bất kỳ file ksu.c nào của FinaSU
-          for file in $(find . -path "*/kernelsu/*" -name "ksu.c" 2>/dev/null); do
-            sed -i 's/enable_sucompat();/\/\/ enable_sucompat();/' "$file"
-            echo "[+] Disabled enable_sucompat() in $file"
-          done
-
-          echo "=== 4. Applying manual patches to fs/ (Non-GKI kprobe hooks) ==="
-          # Các lệnh patch này sẽ tự động bỏ qua nếu bạn đã tự sửa file trong repo rồi
+          echo "=== 2. Fixing MODULE_IMPORT_NS compilation error ==="
+          find . -path "*/kernelsu/*" -name "*.c" -exec sed -i 's/MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);/\/\/ MODULE_IMPORT_NS disabled for non-GKI/' {} \;
           
+          echo "=== 3. Disabling enable_sucompat() in FinaSU ==="
+          find . -path "*/kernelsu/*" -name "ksu.c" -exec sed -i 's/enable_sucompat();/\/\/ enable_sucompat();/' {} \;
+
+          echo "=== 4. Fixing file_wrapper.c for older kernels (iopoll / remap_file_range) ==="
+          FILE="drivers/kernelsu/infra/file_wrapper.c"
+          if [ -f "$FILE" ]; then
+              # Stub iopoll return
+              sed -i 's|return orig->f_op->iopoll(kiocb, spin);|return -EOPNOTSUPP; /* iopoll stub for older kernel */|' "$FILE"
+              # Stub REMAP_FILE_DEDUP check
+              sed -i 's|if (remap_flags & REMAP_FILE_DEDUP) {|if (0) { /* REMAP_FILE_DEDUP stub */|' "$FILE"
+              # Stub remap_file_range calls (2 variations)
+              sed -i 's|return orig->f_op->remap_file_range(file_in, pos_in, orig, pos_out, len, remap_flags);|return -EOPNOTSUPP; /* remap_file_range stub */|' "$FILE"
+              sed -i 's|return orig->f_op->remap_file_range(orig, pos_in, file_out, pos_out, len, remap_flags);|return -EOPNOTSUPP; /* remap_file_range stub */|' "$FILE"
+              # Stub iopoll assignment
+              sed -i 's|p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;|p->ops.iopoll = NULL; /* iopoll stub */|' "$FILE"
+              echo "[+] Successfully patched file_wrapper.c for older kernel compatibility"
+          else
+              echo "[!] file_wrapper.c not found, skipping this fix"
+          fi
+
+          echo "=== 5. Applying manual patches to fs/ (Non-GKI kprobe hooks) ==="
+          # Patch fs/exec.c
           cat << 'EOF' > exec.patch
           --- a/fs/exec.c
           +++ b/fs/exec.c
@@ -99,8 +97,9 @@ jobs:
            	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
            }
           EOF
-          patch -p1 < exec.patch || echo "[INFO] exec.c patch skipped/already applied"
+          patch -p1 < exec.patch || echo "[INFO] exec.c patch skipped or already applied"
 
+          # Patch fs/open.c
           cat << 'EOF' > open.patch
           --- a/fs/open.c
           +++ b/fs/open.c
@@ -122,8 +121,9 @@ jobs:
            	struct cred *override_cred;
            	struct path path;
           EOF
-          patch -p1 < open.patch || echo "[INFO] open.c patch skipped/already applied"
+          patch -p1 < open.patch || echo "[INFO] open.c patch skipped or already applied"
 
+          # Patch fs/read_write.c
           cat << 'EOF' > read_write.patch
           --- a/fs/read_write.c
           +++ b/fs/read_write.c
@@ -145,8 +145,9 @@ jobs:
            		return -EBADF;
            	if (!(file->f_mode & FMODE_CAN_READ))
           EOF
-          patch -p1 < read_write.patch || echo "[INFO] read_write.c patch skipped/already applied"
+          patch -p1 < read_write.patch || echo "[INFO] read_write.c patch skipped or already applied"
 
+          # Patch fs/stat.c
           cat << 'EOF' > stat.patch
           --- a/fs/stat.c
           +++ b/fs/stat.c
@@ -168,8 +169,9 @@ jobs:
            		       AT_EMPTY_PATH | KSTAT_QUERY_FLAGS)) != 0)
            		return -EINVAL;
           EOF
-          patch -p1 < stat.patch || echo "[INFO] stat.c patch skipped/already applied"
+          patch -p1 < stat.patch || echo "[INFO] stat.c patch skipped or already applied"
 
+          # Backport path_umount to fs/namespace.c
           cat << 'EOF' > namespace.patch
           --- a/fs/namespace.c
           +++ b/fs/namespace.c
@@ -213,7 +215,7 @@ jobs:
             * Now umount can handle mount points as well as block devices.
             * This is important for filesystems which use unnamed block devices.
           EOF
-          patch -p1 < namespace.patch || echo "[INFO] namespace.c patch skipped/already applied"
+          patch -p1 < namespace.patch || echo "[INFO] namespace.c patch skipped or already applied"
 
       - name: Configure kernel with FinaSU & Kprobes
         run: |
