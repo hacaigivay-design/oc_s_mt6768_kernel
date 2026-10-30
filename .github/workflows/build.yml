@@ -96,8 +96,14 @@ jobs:
             echo "pkg_observer.c OK"
           fi
 
-          # 7. dynamic_manager.c - stub ksu_dynamic_manager_persist
+          # 7a. dynamic_manager.c - them version.h
           DM=$(find . -name "dynamic_manager.c" | head -1)
+          if [ -n "$DM" ]; then
+            grep -q "linux/version.h" "$DM" || sed -i '1i #include <linux/version.h>' "$DM" || true
+            echo "dynamic_manager.c: added version.h"
+          fi
+
+          # 7b. dynamic_manager.c - stub ksu_dynamic_manager_persist
           if [ -n "$DM" ]; then
             perl -0777 -i -pe '
               s{
