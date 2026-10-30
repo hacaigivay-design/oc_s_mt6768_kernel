@@ -85,6 +85,16 @@ jobs:
               sed -i '1i #ifndef SECCOMP_ARCH_NATIVE_NR\n#define SECCOMP_ARCH_NATIVE_NR 4096\n#endif' "$SC"
           fi
 
+          echo "=== 5. DISABLE -Werror in Makefile (CRITICAL FIX) ==="
+          # Xóa -Werror khỏi Makefile chính để Clang không coi warning là error
+          if [ -f Makefile ]; then
+              sed -i 's/-Werror//g' Makefile
+              echo "[+] Removed -Werror from main Makefile"
+          fi
+          # Xóa -Werror khỏi scripts/Makefile.* nếu có
+          find scripts -name "Makefile*" -exec sed -i 's/-Werror//g' {} \; 2>/dev/null || true
+          echo "[+] Removed -Werror from scripts/Makefile"
+
       - name: Extract FinaSU Manager Signature
         run: |
           echo "=== Extracting FinaSU Manager Signature ==="
@@ -162,18 +172,10 @@ jobs:
           export OBJCOPY=llvm-objcopy
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
-          
-          # === THAY ĐỔI QUAN TRỌNG NHẤT ===
-          # Tắt -Werror để Clang 14 không coi warning là error
-          # Đây là giải pháp chuẩn cho kernel 4.19 build với compiler mới
-          export KCFLAGS="-Wno-error"
-          export KCFLAGS_KERNEL="-Wno-error"
 
           set -eo pipefail
-          echo "Starting kernel build with KCFLAGS=-Wno-error..."
-          make O=out ARCH=arm64 -j$(nproc) \
-            KCFLAGS="-Wno-error" \
-            Image.gz-dtb 2>&1 | tee build.log
+          echo "Starting kernel build (with -Werror removed from Makefile)..."
+          make O=out ARCH=arm64 -j$(nproc) Image.gz-dtb 2>&1 | tee build.log
 
       - name: Show errors if failed
         if: failure()
