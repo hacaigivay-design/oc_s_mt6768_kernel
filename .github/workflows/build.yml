@@ -17,32 +17,44 @@ jobs:
       - name: Integrate FinaSU
         run: |
           curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash || true
+          echo "=== Kiem tra FinaSU ==="
           ls -la FinaSU/ 2>/dev/null || echo "FinaSU KHONG TON TAI!"
+          echo "=== Kiem tra init.c ==="
+          ls -la FinaSU/kernel/core/init.c 2>/dev/null || echo "init.c KHONG TON TAI!"
 
       - name: Patch FinaSU for kernel 4.19
         run: |
           set -e
 
+          # --- Fix MODULE_IMPORT_NS trong init.c ---
           INIT_C="FinaSU/kernel/core/init.c"
           if [ -f "$INIT_C" ]; then
+            echo "Patching MODULE_IMPORT_NS in: $INIT_C"
             perl -0777 -i -pe 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION\(6, 13, 0\)\s*\n\s*MODULE_IMPORT_NS\([^)]*\);\s*\n#else\s*\n\s*MODULE_IMPORT_NS\([^)]*\);\s*\n#endif/\/\* MODULE_IMPORT_NS removed for 4.19 \*\//gs' "$INIT_C" || true
             perl -i -ne 'print unless /MODULE_IMPORT_NS/' "$INIT_C" || true
+            echo "=== Verify $INIT_C ==="
             grep -n "MODULE_IMPORT_NS" "$INIT_C" && echo "VAN CON!" || echo "(da xoa sach)"
+          else
+            echo "CANH BAO: $INIT_C khong ton tai!"
+            find FinaSU -name "init.c" 2>/dev/null
           fi
 
+          # --- Fix fs/dcache.c susfs include ---
           if [ -f fs/dcache.c ]; then
             grep -q "linux/susfs.h" fs/dcache.c || sed -i '/#include <linux\/dcache.h>/a #ifdef CONFIG_KSU_SUSFS\n#include <linux\/susfs.h>\n#endif' fs/dcache.c || true
           fi
 
+          # --- Fix macro INODE_STATE_SUS_PATH ---
           if [ -f include/linux/fs.h ] && ! grep -q "INODE_STATE_SUS_PATH" include/linux/fs.h; then
             sed -i '/^#endif \/\* _LINUX_FS_H \*\//i #ifdef CONFIG_KSU_SUSFS\n#ifndef INODE_STATE_SUS_PATH\n#define INODE_STATE_SUS_PATH (1 << 16)\n#endif\n#endif' include/linux/fs.h || true
           fi
 
+          # --- Fix macro TASK_STRUCT_NON_ROOT_USER_APP_PROC ---
           if [ -f include/linux/sched.h ] && ! grep -q "TASK_STRUCT_NON_ROOT_USER_APP_PROC" include/linux/sched.h; then
             sed -i '/^#endif \/\* _LINUX_SCHED_H \*\//i #ifdef CONFIG_KSU_SUSFS\n#ifndef TASK_STRUCT_NON_ROOT_USER_APP_PROC\n#define TASK_STRUCT_NON_ROOT_USER_APP_PROC (1 << 0)\n#endif\n#endif' include/linux/sched.h || true
           fi
 
-      - name: Replace file_wrapper.c with 4.19-compatible version
+      - name: Patch file_wrapper.c for kernel 4.19
         run: |
           set -e
           F=$(find . -name "file_wrapper.c" | head -1)
@@ -50,11 +62,44 @@ jobs:
             echo "KHONG TIM THAY file_wrapper.c"
             exit 1
           fi
-          echo "Replacing: $F"
-          cp file_wrapper_4.19.c "$F"
+          echo "Patching: $F"
+
+          sed -i 's|^\(\s*\)p->ops\.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n\1p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;\n\1#endif|' "$F" || true
+          sed -i 's|^\(\s*\)p->ops\.remap_file_range = fp->f_op->remap_file_range ? ksu_wrapper_remap_file_range : NULL;|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\n\1p->ops.remap_file_range = fp->f_op->remap_file_range ? ksu_wrapper_remap_file_range : NULL;\n\1#endif|' "$F" || true
+          sed -i 's|^\(\s*\)return orig->f_op->iopoll(kiocb, spin);|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n\1return orig->f_op->iopoll(kiocb, spin);\n\1#else\n\1return -EOPNOTSUPP;\n\1#endif|' "$F" || true
+          sed -i 's|^\(\s*\)return orig->f_op->iopoll(kiocb, icb, v);|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)\n\1return orig->f_op->iopoll(kiocb, icb, v);\n\1#else\n\1return -EOPNOTSUPP;\n\1#endif|' "$F" || true
+
+          perl -0777 -i -pe '
+            s{
+              static\s+loff_t\s+ksu_wrapper_remap_file_range\s*\([^)]*\)\s*\{
+                .*?
+              \}
+            }{
+              #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)
+              static loff_t ksu_wrapper_remap_file_range(struct file *file_in, loff_t pos_in, struct file *file_out, loff_t pos_out, loff_t len, unsigned int remap_flags)
+              {
+                  if (remap_flags & REMAP_FILE_DEDUP) {
+                      struct ksu_file_wrapper *data = file_out->private_data;
+                      struct file *orig = data->orig;
+                      return orig->f_op->remap_file_range(file_in, pos_in, orig, pos_out, len, remap_flags);
+                  } else {
+                      struct ksu_file_wrapper *data = file_in->private_data;
+                      struct file *orig = data->orig;
+                      return orig->f_op->remap_file_range(orig, pos_in, file_out, pos_out, len, remap_flags);
+                  }
+              }
+              #else
+              static loff_t ksu_wrapper_remap_file_range(struct file *file_in, loff_t pos_in, struct file *file_out, loff_t pos_out, loff_t len, unsigned int remap_flags)
+              {
+                  (void)file_in; (void)pos_in; (void)file_out; (void)pos_out; (void)len; (void)remap_flags;
+                  return -EOPNOTSUPP;
+              }
+              #endif
+            }sx
+          ' "$F" || true
+
           echo "=== Verify ==="
-          grep -n "iopoll\|remap_file_range\|REMAP_FILE_DEDUP" "$F" && echo "VAN CON!" || echo "OK - da loai bo hoan toan"
-          wc -l "$F"
+          grep -n "iopoll\|remap_file_range\|REMAP_FILE_DEDUP" "$F" | head -40
 
       - name: Patch seccomp_cache.c for kernel 4.19
         run: |
@@ -68,21 +113,52 @@ jobs:
 
           cat > "$SC" << 'SCEOF'
           // SPDX-License-Identifier: GPL-2.0
+          /* Stub for kernel 4.19 - seccomp cache infrastructure not available */
           #include <linux/version.h>
           #include "klog.h"
           #include "infra/seccomp_cache.h"
 
           #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
           void ksu_seccomp_clear_cache(struct seccomp_filter *filter, int nr)
-          { (void)filter; (void)nr; }
+          {
+              (void)filter;
+              (void)nr;
+          }
 
           void ksu_seccomp_allow_cache(struct seccomp_filter *filter, int nr)
-          { (void)filter; (void)nr; }
+          {
+              (void)filter;
+              (void)nr;
+          }
           #endif
           SCEOF
 
           echo "=== Verify ==="
           grep -n "SECCOMP_ARCH_NATIVE_NR\|ksu_seccomp" "$SC" | head -20
+
+      - name: Patch mount.h include for kernel 4.19
+        run: |
+          set -e
+          echo "=== Tim file dung uapi/linux/mount.h ==="
+          grep -rl "uapi/linux/mount.h" FinaSU/ 2>/dev/null || echo "(khong thay)"
+          
+          FOUND=0
+          for f in $(grep -rl "uapi/linux/mount.h" FinaSU/ 2>/dev/null); do
+            FOUND=1
+            echo "Patching: $f"
+            sed -i 's|#include <uapi/linux/mount.h>|#include <linux/mount.h>|g' "$f" || true
+            echo "=== Verify $f ==="
+            grep -n "uapi/linux/mount.h\|linux/mount.h" "$f" | head -5
+          done
+          
+          if [ "$FOUND" = "0" ]; then
+            echo "CANH BAO: khong tim thay file nao dung uapi/linux/mount.h"
+            SM=$(find FinaSU -name "su_mount_ns.c" 2>/dev/null | head -1)
+            if [ -n "$SM" ]; then
+              echo "=== Kiem tra $SM ==="
+              sed -n '1,25p' "$SM"
+            fi
+          fi
 
       - name: Install dependencies + Clang 14 + GCC cross
         run: |
