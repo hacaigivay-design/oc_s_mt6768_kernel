@@ -1,4 +1,4 @@
-name: Build MT6768 Kernel for Merlin
+name: Build MT6768 Kernel for Merlin (with KernelSU Non-GKI Patch)
 
 on:
   workflow_dispatch:
@@ -40,120 +40,164 @@ jobs:
           echo "=== GCC cross ==="
           aarch64-linux-gnu-gcc --version | head -1
 
-      - name: Integrate FinaSU
-        run: |
-          curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash || true
-
-      - name: Patch FinaSU for kernel 4.19
-        shell: bash
-        run: |
-          set +e
-          echo "=== Patch FinaSU for kernel 4.19 ==="
-
-          INIT_C="FinaSU/kernel/core/init.c"
-          [ -f "$INIT_C" ] && perl -0777 -i -pe 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION\(6, 13, 0\)\s*\n\s*MODULE_IMPORT_NS\([^)]*\);\s*\n#else\s*\n\s*MODULE_IMPORT_NS\([^)]*\);\s*\n#endif/\/\* removed \*\//gs' "$INIT_C"
-          [ -f "$INIT_C" ] && perl -i -ne 'print unless /MODULE_IMPORT_NS/' "$INIT_C"
-
-          [ -f fs/dcache.c ] && (grep -q "linux/susfs.h" fs/dcache.c || sed -i '/#include <linux\/dcache.h>/a #ifdef CONFIG_KSU_SUSFS\n#include <linux\/susfs.h>\n#endif' fs/dcache.c)
-          [ -f include/linux/fs.h ] && ! grep -q "INODE_STATE_SUS_PATH" include/linux/fs.h && sed -i '/^#endif \/\* _LINUX_FS_H \*\//i #ifdef CONFIG_KSU_SUSFS\n#ifndef INODE_STATE_SUS_PATH\n#define INODE_STATE_SUS_PATH (1 << 16)\n#endif\n#endif' include/linux/fs.h
-          [ -f include/linux/sched.h ] && ! grep -q "TASK_STRUCT_NON_ROOT_USER_APP_PROC" include/linux/sched.h && sed -i '/^#endif \/\* _LINUX_SCHED_H \*\//i #ifdef CONFIG_KSU_SUSFS\n#ifndef TASK_STRUCT_NON_ROOT_USER_APP_PROC\n#define TASK_STRUCT_NON_ROOT_USER_APP_PROC (1 << 0)\n#endif\n#endif' include/linux/sched.h
-
-          F=$(find . -name "file_wrapper.c" | head -1)
-          [ -n "$F" ] && sed -i 's|^\(\s*\)p->ops\.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n\1p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;\n\1#endif|' "$F"
-          [ -n "$F" ] && sed -i 's|^\(\s*\)p->ops\.remap_file_range = fp->f_op->remap_file_range ? ksu_wrapper_remap_file_range : NULL;|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\n\1p->ops.remap_file_range = fp->f_op->remap_file_range ? ksu_wrapper_remap_file_range : NULL;\n\1#endif|' "$F"
-          [ -n "$F" ] && sed -i 's|^\(\s*\)return orig->f_op->iopoll(kiocb, spin);|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n\1return orig->f_op->iopoll(kiocb, spin);\n\1#else\n\1return -EOPNOTSUPP;\n\1#endif|' "$F"
-          [ -n "$F" ] && awk 'BEGIN{in_func=0;depth=0} /static loff_t ksu_wrapper_remap_file_range\(/{in_func=1;print "#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)"} in_func{print;n=gsub(/\{/,"{");m=gsub(/\}/,"}");depth+=n-m;if(depth==0&&n+m>0){print "#endif";in_func=0};next}{print}' "$F" > "$F.tmp" && mv "$F.tmp" "$F"
-
-          for f in $(grep -rl "linux/minmax.h" FinaSU/ 2>/dev/null); do sed -i 's|#include <linux/minmax.h>|#include <linux/kernel.h>|g' "$f"; done
-
-          DI=$(find . -name "dispatch.c" -path "*supercall*" | head -1)
-          [ -n "$DI" ] && sed -i '1i #include <linux/sched/signal.h>\n#include <linux/sched/task.h>\n#include <linux/init_task.h>' "$DI"
-
-          SC=$(find . -name "seccomp_cache.c" | head -1)
-          [ -n "$SC" ] && printf '%s\n' '#include <linux/version.h>' '#include "klog.h"' '#include "infra/seccomp_cache.h"' '#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)' 'void ksu_seccomp_clear_cache(struct seccomp_filter *filter, int nr) { (void)filter; (void)nr; }' 'void ksu_seccomp_allow_cache(struct seccomp_filter *filter, int nr) { (void)filter; (void)nr; }' '#endif' > "$SC"
-
-          for f in $(grep -rl "uapi/linux/mount.h" FinaSU/ 2>/dev/null); do sed -i 's|#include <uapi/linux/mount.h>|#include <linux/mount.h>|g' "$f"; done
-
-          PO=$(find . -name "pkg_observer.c" | head -1)
-          [ -n "$PO" ] && printf '%s\n' '#include <linux/version.h>' '#include "klog.h"' '#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)' 'int ksu_observer_init(void) { pr_info("observer: not supported"); return 0; }' 'void ksu_observer_exit(void) { }' '#endif' > "$PO"
-
-          DM=$(find . -name "dynamic_manager.c" | head -1)
-          [ -n "$DM" ] && sed -i '1i #include <linux/version.h>' "$DM"
-          [ -n "$DM" ] && perl -0777 -i -pe 's/void\s+ksu_dynamic_manager_persist\s*\(\s*void\s*\)\s*\{.*?\n\}/#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)\nvoid ksu_dynamic_manager_persist(void) { }\n#else\nvoid ksu_dynamic_manager_persist(void) { pr_warn("dynamic_manager: persist not supported"); }\n#endif/s' "$DM"
-
-          AL=$(find . -name "allowlist.c" | head -1)
-          [ -n "$AL" ] && sed -i '1i #include <linux/version.h>' "$AL"
-          [ -n "$AL" ] && perl -0777 -i -pe 's/void\s+ksu_persistent_allow_list\s*\(\s*\)\s*\{.*?\n\}/#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)\nvoid ksu_persistent_allow_list(void) { }\n#else\nvoid ksu_persistent_allow_list(void) { pr_warn("allowlist: persist not supported"); }\n#endif/s' "$AL"
-
-          AP=$(find . -name "app_profile.c" | head -1)
-          [ -n "$AP" ] && sed -i '1i #include <linux/version.h>' "$AP"
-          [ -n "$AP" ] && perl -0777 -i -pe 's/static\s+void\s+disable_seccomp\s*\(\s*void\s*\)\s*\{.*?\n\}/static void disable_seccomp(void) {\n#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)\n    spin_lock_irq(\&current->sighand->siglock);\n    clear_thread_flag(TIF_SECCOMP);\n    current->seccomp.mode = 0;\n    current->seccomp.filter = NULL;\n    spin_unlock_irq(\&current->sighand->siglock);\n#else\n    struct task_struct *fake = kmalloc(sizeof(*fake), GFP_KERNEL);\n    if (!fake) return;\n    spin_lock_irq(\&current->sighand->siglock);\n    clear_thread_flag(TIF_SECCOMP);\n    memcpy(fake, current, sizeof(*fake));\n    current->seccomp.mode = 0;\n    current->seccomp.filter = NULL;\n    atomic_set(\&current->seccomp.filter_count, 0);\n    spin_unlock_irq(\&current->sighand->siglock);\n    seccomp_filter_release(fake);\n    kfree(fake);\n#endif\n}/s' "$AP"
-
-          RU=$(find . -name "rules.c" -path "*selinux*" | head -1)
-          [ -n "$RU" ] && printf '%s\n' '#include <linux/version.h>' '#include <linux/types.h>' '#include <linux/uaccess.h>' '#include "klog.h"' '#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)' 'void apply_kernelsu_rules(void) { pr_info("rules: not supported"); }' 'int handle_sepolicy(void __user *u, u64 l) { (void)u; (void)l; return -EOPNOTSUPP; }' '#endif' > "$RU"
-
-          SP=$(find . -name "sepolicy.c" -path "*selinux*" | head -1)
-          [ -n "$SP" ] && printf '%s\n' '#include <linux/version.h>' '#include <linux/types.h>' '#include "klog.h"' '#include "sepolicy.h"' '#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)' 'bool ksu_type(struct policydb *d, const char *n, const char *a) { (void)d;(void)n;(void)a; return false; }' 'bool ksu_attribute(struct policydb *d, const char *n) { (void)d;(void)n; return false; }' 'bool ksu_permissive(struct policydb *d, const char *t) { (void)d;(void)t; return false; }' 'bool ksu_enforce(struct policydb *d, const char *t) { (void)d;(void)t; return false; }' 'bool ksu_typeattribute(struct policydb *d, const char *t, const char *a) { (void)d;(void)t;(void)a; return false; }' 'bool ksu_exists(struct policydb *d, const char *t) { (void)d;(void)t; return false; }' 'bool ksu_allow(struct policydb *d, const char *s, const char *t, const char *c, const char *p) { (void)d;(void)s;(void)t;(void)c;(void)p; return false; }' 'bool ksu_deny(struct policydb *d, const char *s, const char *t, const char *c, const char *p) { (void)d;(void)s;(void)t;(void)c;(void)p; return false; }' 'bool ksu_auditallow(struct policydb *d, const char *s, const char *t, const char *c, const char *p) { (void)d;(void)s;(void)t;(void)c;(void)p; return false; }' 'bool ksu_dontaudit(struct policydb *d, const char *s, const char *t, const char *c, const char *p) { (void)d;(void)s;(void)t;(void)c;(void)p; return false; }' 'bool ksu_allowxperm(struct policydb *d, const char *s, const char *t, const char *c, const char *r) { (void)d;(void)s;(void)t;(void)c;(void)r; return false; }' 'bool ksu_auditallowxperm(struct policydb *d, const char *s, const char *t, const char *c, const char *r) { (void)d;(void)s;(void)t;(void)c;(void)r; return false; }' 'bool ksu_dontauditxperm(struct policydb *d, const char *s, const char *t, const char *c, const char *r) { (void)d;(void)s;(void)t;(void)c;(void)r; return false; }' 'bool ksu_type_transition(struct policydb *d, const char *s, const char *t, const char *c, const char *def, const char *o) { (void)d;(void)s;(void)t;(void)c;(void)def;(void)o; return false; }' 'bool ksu_type_change(struct policydb *d, const char *s, const char *t, const char *c, const char *def) { (void)d;(void)s;(void)t;(void)c;(void)def; return false; }' 'bool ksu_type_member(struct policydb *d, const char *s, const char *t, const char *c, const char *def) { (void)d;(void)s;(void)t;(void)c;(void)def; return false; }' 'bool ksu_genfscon(struct policydb *d, const char *f, const char *p, const char *c) { (void)d;(void)f;(void)p;(void)c; return false; }' 'void ksu_destroy_sepolicy(struct selinux_policy *p) { (void)p; }' 'struct selinux_policy *ksu_dup_sepolicy(struct selinux_policy *p) { (void)p; return ERR_PTR(-EOPNOTSUPP); }' '#endif' > "$SP"
-
-          # ============================================================
-          # FIX supercall.c: viet script Python ra file tam de tranh
-          # loi heredoc long trong YAML
-          # ============================================================
-          SU=$(find . -name "supercall.c" -path "*supercall*" | head -1)
-          if [ -n "$SU" ]; then
-            echo "Found supercall.c: $SU"
-            grep -q '#include <linux/version.h>' "$SU" || sed -i '1i #include <linux/version.h>' "$SU"
-
-            cat > /tmp/patch_supercall.py <<'PYEOF'
-import re, sys
-p = sys.argv[1]
-s = open(p).read()
-
-if "ksu_install_fd_tw_func(&tw->cb);" in s and "#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)" in s:
-    print("supercall.c: already patched, skip")
-    sys.exit(0)
-
-pat = re.compile(
-    r'(?P<pre>if\s*\(\s*task_work_add\s*\(\s*current\s*,\s*&\s*tw->cb\s*,\s*TWA_RESUME\s*\)\s*\)\s*\{)'
-    r'(?P<body>.*?)'
-    r'(?P<post>\})',
-    re.S,
-)
-
-def repl(m):
-    return (
-        "#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)\n"
-        "        " + m.group('pre') + m.group('body') + m.group('post') + "\n"
-        "#else\n"
-        "        ksu_install_fd_tw_func(&tw->cb);\n"
-        "#endif"
-    )
-
-new, n = pat.subn(repl, s, count=1)
-if n == 0:
-    print("WARN: task_work_add block NOT found in", p)
-    print("--- context around task_work_add ---")
-    idx = s.find("task_work_add")
-    if idx >= 0:
-        print(s[max(0,idx-200):idx+400])
-    sys.exit(0)
-
-open(p, "w").write(new)
-print("supercall.c: patched OK")
-PYEOF
-
-            python3 /tmp/patch_supercall.py "$SU"
-          else
-            echo "WARN: supercall.c not found, skip"
-          fi
-          # ============================================================
-
-          echo "PATCH DONE"
-
       - name: Prepare output dir
         run: mkdir -p out
 
-      - name: Configure kernel
+      - name: Setup KernelSU & Apply Manual Patches (Non-GKI)
+        run: |
+          echo "=== 1. Running KernelSU setup.sh ==="
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+          
+          echo "=== 2. Applying manual patches to fs/ ==="
+          # Patch fs/exec.c
+          cat << 'EOF' > exec.patch
+          --- a/fs/exec.c
+          +++ b/fs/exec.c
+          @@ -1890,11 +1890,14 @@ static int __do_execve_file(int fd, struct filename *filename,
+           	return retval;
+           }
+           
+          +extern bool ksu_execveat_hook __read_mostly;
+          +extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
+          +			void *envp, int *flags);
+          +extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+          +				 void *argv, void *envp, int *flags);
+           static int do_execveat_common(int fd, struct filename *filename,
+           			      struct user_arg_ptr argv,
+           			      struct user_arg_ptr envp,
+           			      int flags)
+           {
+          +	if (unlikely(ksu_execveat_hook))
+          +		ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+          +	else
+          +		ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
+           	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
+           }
+          EOF
+          patch -p1 < exec.patch || echo "[WARNING] exec.c patch failed, line numbers may differ in your source"
+
+          # Patch fs/open.c
+          cat << 'EOF' > open.patch
+          --- a/fs/open.c
+          +++ b/fs/open.c
+          @@ -348,6 +348,8 @@ SYSCALL_DEFINE4(fallocate, int, fd, int, mode, loff_t, offset, loff_t, len)
+           	return ksys_fallocate(fd, mode, offset, len);
+           }
+           
+          +extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,
+          +			 int *flags);
+           /*
+            * access() needs to use the real uid/gid, not the effective uid/gid.
+            * We do this by temporarily clearing all FS-related capabilities and
+          @@ -355,6 +357,7 @@ SYSCALL_DEFINE4(fallocate, int, fd, int, mode, loff_t, offset, loff_t, len)
+            */
+           long do_faccessat(int dfd, const char __user *filename, int mode)
+           {
+          +	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
+           	const struct cred *old_cred;
+           	struct cred *override_cred;
+           	struct path path;
+          EOF
+          patch -p1 < open.patch || echo "[WARNING] open.c patch failed"
+
+          # Patch fs/read_write.c
+          cat << 'EOF' > read_write.patch
+          --- a/fs/read_write.c
+          +++ b/fs/read_write.c
+          @@ -434,10 +434,14 @@ ssize_t kernel_read(struct file *file, void *buf, size_t count, loff_t *pos)
+           }
+           EXPORT_SYMBOL(kernel_read);
+           
+          +extern bool ksu_vfs_read_hook __read_mostly;
+          +extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
+          +			size_t *count_ptr, loff_t **pos);
+           ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
+           {
+           	ssize_t ret;
+           
+          +	if (unlikely(ksu_vfs_read_hook))
+          +		ksu_handle_vfs_read(&file, &buf, &count, &pos);
+          +
+           	if (!(file->f_mode & FMODE_READ))
+           		return -EBADF;
+           	if (!(file->f_mode & FMODE_CAN_READ))
+          EOF
+          patch -p1 < read_write.patch || echo "[WARNING] read_write.c patch failed"
+
+          # Patch fs/stat.c
+          cat << 'EOF' > stat.patch
+          --- a/fs/stat.c
+          +++ b/fs/stat.c
+          @@ -148,6 +148,8 @@ int vfs_statx_fd(unsigned int fd, struct kstat *stat,
+           }
+           EXPORT_SYMBOL(vfs_statx_fd);
+           
+          +extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
+          +
+           /**
+            * vfs_statx - Get basic and extra attributes by filename
+            * @dfd: A file descriptor representing the base dir for a relative filename
+          @@ -170,6 +172,7 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
+           	int error = -EINVAL;
+           	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;
+           
+          +	ksu_handle_stat(&dfd, &filename, &flags);
+           	if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
+           		       AT_EMPTY_PATH | KSTAT_QUERY_FLAGS)) != 0)
+           		return -EINVAL;
+          EOF
+          patch -p1 < stat.patch || echo "[WARNING] stat.c patch failed"
+
+          # Backport path_umount to fs/namespace.c
+          cat << 'EOF' > namespace.patch
+          --- a/fs/namespace.c
+          +++ b/fs/namespace.c
+          @@ -1739,6 +1739,39 @@ static inline bool may_mandlock(void)
+           }
+           #endif
+           
+          +static int can_umount(const struct path *path, int flags)
+          +{
+          +	struct mount *mnt = real_mount(path->mnt);
+          +
+          +	if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))
+          +		return -EINVAL;
+          +	if (!may_mount())
+          +		return -EPERM;
+          +	if (path->dentry != path->mnt->mnt_root)
+          +		return -EINVAL;
+          +	if (!check_mnt(mnt))
+          +		return -EINVAL;
+          +	if (mnt->mnt.mnt_flags & MNT_LOCKED)
+          +		return -EINVAL;
+          +	if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))
+          +		return -EPERM;
+          +	return 0;
+          +}
+          +
+          +int path_umount(struct path *path, int flags)
+          +{
+          +	struct mount *mnt = real_mount(path->mnt);
+          +	int ret;
+          +
+          +	ret = can_umount(path, flags);
+          +	if (!ret)
+          +		ret = do_umount(mnt, flags);
+          +
+          +	dput(path->dentry);
+          +	mntput_no_expire(mnt);
+          +	return ret;
+          +}
+           /*
+            * Now umount can handle mount points as well as block devices.
+            * This is important for filesystems which use unnamed block devices.
+          EOF
+          patch -p1 < namespace.patch || echo "[WARNING] namespace.c patch failed"
+
+          echo "=== 3. Disabling enable_sucompat() in KernelSU ==="
+          sed -i 's/enable_sucompat()/\/\/ enable_sucompat()/' KernelSU/kernel/ksu.c || echo "[WARNING] Could not find enable_sucompat to disable"
+
+      - name: Configure kernel with Kprobes & KernelSU
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
@@ -168,7 +212,19 @@ PYEOF
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
 
+          # Buoc defconfig dung GCC cross de test compiler
           make O=out ARCH=arm64 vendor/mt6768_defconfig
+
+          # Them cac cau hinh bat buoc cho Kprobes va Modules (theo huong dan KernelSU)
+          echo "=== Injecting KernelSU & Kprobe configs ==="
+          cat << 'EOF' >> arch/arm64/configs/vendor/merlin.config
+          CONFIG_KPROBES=y
+          CONFIG_HAVE_KPROBES=y
+          CONFIG_KPROBE_EVENTS=y
+          CONFIG_MODULES=y
+          CONFIG_MODULE_FORCE_LOAD=y
+          CONFIG_MODULE_FORCE_UNLOAD=y
+          EOF
 
           echo "=== Merge merlin.config ==="
           ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m \
@@ -178,7 +234,7 @@ PYEOF
           make O=out ARCH=arm64 olddefconfig
 
           echo "=== KIEM TRA CONFIG ==="
-          grep -E "CONFIG_BLK_INLINE_ENCRYPTION|CONFIG_ARCH_MEDIATEK|CONFIG_CC_OPTIMIZE" out/.config || true
+          grep -E "CONFIG_KPROBES|CONFIG_MODULES|CONFIG_BLK_INLINE_ENCRYPTION|CONFIG_ARCH_MEDIATEK" out/.config || true
 
       - name: Build kernel (Clang 14)
         run: |
@@ -231,7 +287,7 @@ PYEOF
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-merlin
+          name: kernel-merlin-kernelsu
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/Image.gz
