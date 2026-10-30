@@ -1,4 +1,4 @@
-name: Build MT6768 Kernel (KernelSU Next + FinaSU Manager)
+name: Build MT6768 Kernel (KernelSU-Next + FinaSU Manager)
 
 on:
   workflow_dispatch:
@@ -39,49 +39,24 @@ jobs:
       - name: Prepare output dir
         run: mkdir -p out
 
-      - name: Setup KernelSU Next Manually (Avoid 404 errors)
+      - name: Setup KernelSU-Next
         run: |
-          echo "=== Cloning KernelSU-Next ==="
-          # Clone trực tiếp để tránh lỗi script 404
-          git clone https://github.com/rifsxd/KernelSU-Next.git KernelSU-Next
-          cd KernelSU-Next
-          git checkout next
-          cd ..
+          echo "=== Running KernelSU-Next setup.sh (dev branch) ==="
+          # Sử dụng đường link CHÍNH XÁC bạn đã cung cấp
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash -s dev
+          echo "[+] KernelSU-Next setup completed."
 
-          echo "=== Linking to drivers ==="
-          # Tìm thư mục drivers
-          if [ -d "common/drivers" ]; then
-              DRIVER_DIR="common/drivers"
-          elif [ -d "drivers" ]; then
-              DRIVER_DIR="drivers"
-          else
-              echo "ERROR: drivers directory not found"
-              exit 1
-          fi
-
-          # Tạo symlink giống như setup.sh làm
-          ln -sf "$(pwd)/KernelSU-Next/kernel" "$DRIVER_DIR/kernelsu"
-          
-          # Thêm vào Makefile nếu chưa có
-          if ! grep -q "kernelsu" "$DRIVER_DIR/Makefile"; then
-              printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$DRIVER_DIR/Makefile"
-          fi
-          
-          # Thêm vào Kconfig nếu chưa có
-          if ! grep -q "drivers/kernelsu/Kconfig" "$DRIVER_DIR/Kconfig"; then
-              sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" "$DRIVER_DIR/Kconfig"
-          fi
-          
-          echo "[+] KernelSU-Next linked successfully."
-
-      - name: Apply Compatibility Patches
+      - name: Apply Compatibility Patches for Kernel 4.19
         run: |
+          set +e # Cho phép bỏ qua nếu không tìm thấy file
+
           echo "=== 1. Fixing MODULE_IMPORT_NS ==="
           grep -rl "MODULE_IMPORT_NS" --include="*.c" . > /tmp/fix_ns.txt || true
           if [ -s /tmp/fix_ns.txt ]; then
               while IFS= read -r f; do
                   sed -i '/MODULE_IMPORT_NS/d' "$f"
               done < /tmp/fix_ns.txt
+              echo "[+] Removed MODULE_IMPORT_NS."
           fi
 
           echo "=== 2. Fixing blk-crypto headers ==="
@@ -94,6 +69,7 @@ jobs:
               sed -i '/iopoll/d' "$F"
               sed -i '/remap_file_range/d' "$F"
               sed -i '/REMAP_FILE_DEDUP/d' "$F"
+              echo "[+] Cleaned file_wrapper.c"
           fi
 
           echo "=== 4. Fixing seccomp_cache.c ==="
@@ -103,6 +79,7 @@ jobs:
           fi
 
           echo "=== 5. Patching fs/ for kprobes ==="
+          
           # exec.c
           cat << 'EOF' > exec.patch
           --- a/fs/exec.c
@@ -184,6 +161,7 @@ jobs:
 
       - name: Extract FinaSU Manager Signature
         run: |
+          echo "=== Extracting FinaSU Manager Signature ==="
           DEFAULT_SIZE="0x033b"
           DEFAULT_HASH="c371061b19d8c7d7d6133c6a9bafe198fa944e50c1b31c9d8daa8d7f1fc2d2d6"
           
@@ -193,12 +171,14 @@ jobs:
                   KSU_HASH=$(openssl dgst -sha256 META-INF/CERT.RSA | awk '{print $2}')
                   echo "$KSU_SIZE" > /tmp/ksu_size
                   echo "$KSU_HASH" > /tmp/ksu_hash
-                  echo "[+] Using FinaSU Manager signature"
+                  echo "[+] Successfully extracted FinaSU Manager signature."
               else
+                  echo "[!] Could not extract signature, using default."
                   echo "$DEFAULT_SIZE" > /tmp/ksu_size
                   echo "$DEFAULT_HASH" > /tmp/ksu_hash
               fi
           else
+              echo "[!] Could not download APK, using default signature."
               echo "$DEFAULT_SIZE" > /tmp/ksu_size
               echo "$DEFAULT_HASH" > /tmp/ksu_hash
           fi
@@ -218,6 +198,7 @@ jobs:
           KSU_HASH=$(cat /tmp/ksu_hash)
           KSU_SIZE_HEX=$(printf '%x' "$KSU_SIZE")
 
+          echo "=== Injecting KernelSU-Next + FinaSU Manager configs ==="
           cat << EOF >> arch/arm64/configs/vendor/merlin.config
           CONFIG_KSU=y
           CONFIG_KPROBES=y
@@ -236,6 +217,9 @@ jobs:
 
           ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m out/.config arch/arm64/configs/vendor/merlin.config
           make O=out ARCH=arm64 olddefconfig
+          
+          echo "=== VERIFY CONFIG ==="
+          grep -E "CONFIG_KSU=y|CONFIG_KSU_EXPECTED" out/.config || echo "WARNING: Config missing!"
 
       - name: Build Kernel
         run: |
@@ -252,22 +236,35 @@ jobs:
           export STRIP=llvm-strip
 
           set -eo pipefail
+          echo "Starting kernel build..."
           make O=out ARCH=arm64 -j$(nproc) Image.gz-dtb 2>&1 | tee build.log
 
-      - name: Upload Artifacts
+      - name: Show errors if failed
+        if: failure()
+        run: |
+          echo "======== BUILD FAILED - CHECK ERRORS ========"
+          if [ -f build.log ]; then
+            grep -n -B10 -A15 "error:" build.log | head -200 || echo "(khong co error:)"
+            echo "======== 150 dong cuoi ========"
+            tail -150 build.log || true
+          fi
+
+      - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-log
           path: build.log
           if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload Kernel
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-merlin-finasu
+          name: kernel-merlin-ksunext-finasu
           path: |
             out/arch/arm64/boot/Image*
             out/arch/arm64/boot/dts/mediatek/*.dtb
           if-no-files-found: error
+          retention-days: 30
