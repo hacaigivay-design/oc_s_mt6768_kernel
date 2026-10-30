@@ -28,7 +28,7 @@ jobs:
           if [ -f "$INIT_C" ]; then
             perl -0777 -i -pe 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION\(6, 13, 0\)\s*\n\s*MODULE_IMPORT_NS\([^)]*\);\s*\n#else\s*\n\s*MODULE_IMPORT_NS\([^)]*\);\s*\n#endif/\/\* MODULE_IMPORT_NS removed for 4.19 \*\//gs' "$INIT_C" || true
             perl -i -ne 'print unless /MODULE_IMPORT_NS/' "$INIT_C" || true
-            grep -n "MODULE_IMPORT_NS" "$INIT_C" && echo "VAN CON!" || echo "init.c OK"
+            echo "init.c OK"
           fi
 
           # 2. fs/dcache.c + macro SUSFS
@@ -41,6 +41,7 @@ jobs:
           if [ -f include/linux/sched.h ] && ! grep -q "TASK_STRUCT_NON_ROOT_USER_APP_PROC" include/linux/sched.h; then
             sed -i '/^#endif \/\* _LINUX_SCHED_H \*\//i #ifdef CONFIG_KSU_SUSFS\n#ifndef TASK_STRUCT_NON_ROOT_USER_APP_PROC\n#define TASK_STRUCT_NON_ROOT_USER_APP_PROC (1 << 0)\n#endif\n#endif' include/linux/sched.h || true
           fi
+          echo "SUSFS macros OK"
 
           # 3. file_wrapper.c
           F=$(find . -name "file_wrapper.c" | head -1)
@@ -80,27 +81,55 @@ jobs:
           done
           echo "mount.h OK"
 
-          # 6. pkg_observer.c - stub rong cho kernel < 5.9
+          # 6. pkg_observer.c - stub rong
           PO=$(find . -name "pkg_observer.c" | head -1)
           if [ -n "$PO" ]; then
             cat > "$PO" << 'PKGEOF'
           // SPDX-License-Identifier: GPL-2.0
           #include <linux/version.h>
           #include "klog.h"
-
           #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
-          int ksu_observer_init(void)
-          {
-              pr_info("observer: not supported on kernel < 5.9\n");
-              return 0;
-          }
-
-          void ksu_observer_exit(void)
-          {
-          }
+          int ksu_observer_init(void) { pr_info("observer: not supported on 4.19\n"); return 0; }
+          void ksu_observer_exit(void) { }
           #endif
           PKGEOF
             echo "pkg_observer.c OK"
+          fi
+
+          # 7. dynamic_manager.c - stub ksu_dynamic_manager_persist
+          DM=$(find . -name "dynamic_manager.c" | head -1)
+          if [ -n "$DM" ]; then
+            perl -0777 -i -pe '
+              s{
+                void\s+ksu_dynamic_manager_persist\s*\(\s*void\s*\)\s*\{
+                  .*?
+                \n\}
+              }{
+                #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+                void ksu_dynamic_manager_persist(void)
+                {
+                    struct task_struct *tsk;
+                    struct callback_head *cb;
+                    rcu_read_lock();
+                    tsk = get_pid_task(find_vpid(1), PIDTYPE_PID);
+                    if (!tsk) { rcu_read_unlock(); pr_err("dynamic_manager: find init task err\n"); return; }
+                    rcu_read_unlock();
+                    cb = kzalloc(sizeof(*cb), GFP_KERNEL);
+                    if (!cb) { pr_err("dynamic_manager: alloc cb err\n"); goto put_task; }
+                    cb->func = do_persist_dynamic_manager;
+                    if (task_work_add(tsk, cb, TWA_RESUME)) { kfree(cb); pr_warn("dynamic_manager: add task_work failed\n"); }
+                put_task:
+                    put_task_struct(tsk);
+                }
+                #else
+                void ksu_dynamic_manager_persist(void)
+                {
+                    pr_warn("dynamic_manager: persist not supported on kernel < 5.10\n");
+                }
+                #endif
+              }sx
+            ' "$DM" || true
+            echo "dynamic_manager.c OK"
           fi
 
       - name: Install dependencies + Clang 14 + GCC cross
