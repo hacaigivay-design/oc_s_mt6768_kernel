@@ -133,7 +133,7 @@ jobs:
             echo "dynamic_manager.c OK"
           fi
 
-          # 8. allowlist.c - stub ksu_persistent_allow_list
+          # 8. allowlist.c
           AL=$(find . -name "allowlist.c" | head -1)
           if [ -n "$AL" ]; then
             grep -q "linux/version.h" "$AL" || sed -i '1i #include <linux/version.h>' "$AL" || true
@@ -167,6 +167,55 @@ jobs:
               }sx
             ' "$AL" || true
             echo "allowlist.c OK"
+          fi
+
+          # 9. app_profile.c - disable_seccomp
+          AP=$(find . -name "app_profile.c" | head -1)
+          if [ -n "$AP" ]; then
+            grep -q "linux/version.h" "$AP" || sed -i '1i #include <linux/version.h>' "$AP" || true
+            perl -0777 -i -pe '
+              s{
+                static\s+void\s+disable_seccomp\s*\(\s*void\s*\)\s*\{
+                  .*?
+                \n\}
+              }{
+                static void disable_seccomp(void)
+                {
+                #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
+                    spin_lock_irq(&current->sighand->siglock);
+                    clear_thread_flag(TIF_SECCOMP);
+                    current->seccomp.mode = 0;
+                    current->seccomp.filter = NULL;
+                    spin_unlock_irq(&current->sighand->siglock);
+                #else
+                    struct task_struct *fake;
+                    fake = kmalloc(sizeof(*fake), GFP_KERNEL);
+                    if (!fake) { pr_warn("failed to alloc fake task_struct"); return; }
+                    spin_lock_irq(&current->sighand->siglock);
+                #if defined(CONFIG_GENERIC_ENTRY) && LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
+                    clear_syscall_work(SECCOMP);
+                #else
+                    clear_thread_flag(TIF_SECCOMP);
+                #endif
+                    memcpy(fake, current, sizeof(*fake));
+                    current->seccomp.mode = 0;
+                    current->seccomp.filter = NULL;
+                    atomic_set(&current->seccomp.filter_count, 0);
+                    spin_unlock_irq(&current->sighand->siglock);
+                #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+                    fake->flags |= PF_EXITING;
+                #elif NEED_BACKPORT_COMPAT
+                    if (has_call_to_spin_lock) { fake->flags |= PF_EXITING; } else { fake->sighand = NULL; }
+                #elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
+                    fake->sighand = NULL;
+                #endif
+                    seccomp_filter_release(fake);
+                    kfree(fake);
+                #endif
+                }
+              }sx
+            ' "$AP" || true
+            echo "app_profile.c OK"
           fi
 
       - name: Install dependencies + Clang 14 + GCC cross
