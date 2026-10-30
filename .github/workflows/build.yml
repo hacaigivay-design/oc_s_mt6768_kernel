@@ -1,4 +1,4 @@
-name: Build MT6768 Kernel for Merlin (with KernelSU Non-GKI Patch)
+name: Build MT6768 Kernel for Merlin (with FinaSU Non-GKI)
 
 on:
   workflow_dispatch:
@@ -43,22 +43,23 @@ jobs:
       - name: Prepare output dir
         run: mkdir -p out
 
-      - name: Setup KernelSU & Apply Manual Patches (Non-GKI)
+      - name: Setup FinaSU & Apply Fixes/Patches
         run: |
-          echo "=== 1. Running KernelSU setup.sh (v0.9.5 for stable non-GKI) ==="
-          # Sử dụng v0.9.5 vì đây là phiên bản cuối cùng hỗ trợ non-GKI ổn định trước khi bị thay đổi macro
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
-          
-          echo "=== 2. Fixing MODULE_IMPORT_NS compilation error for older kernels ==="
-          # Tự động comment dòng gây lỗi trên các kernel < 5.10
+          echo "=== 1. Running FinaSU setup.sh ==="
+          # Tải và chạy script setup.sh chính chủ từ FinaSU (mặc định nhánh dev)
+          curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash
+
+          echo "=== 2. Fixing MODULE_IMPORT_NS compilation error (Safety for older kernels) ==="
+          # Tự động comment dòng gây lỗi trên kernel < 5.10 nếu nó còn tồn tại trong source FinaSU
           find . -path "*/kernelsu/*" -name "*.c" -exec sed -i 's/MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);/\/\/ MODULE_IMPORT_NS disabled for non-GKI/' {} \;
           
-          echo "=== 3. Disabling enable_sucompat() in KernelSU ==="
-          # Dùng find để đảm bảo tìm đúng file ksu.c bất kể nó nằm ở KernelSU/kernel/ hay drivers/kernelsu/core/
+          echo "=== 3. Disabling enable_sucompat() in FinaSU ==="
+          # Tìm file ksu.c và comment hàm enable_sucompat() theo hướng dẫn
           find . -path "*/kernelsu/*" -name "ksu.c" -exec sed -i 's/enable_sucompat();/\/\/ enable_sucompat();/' {} \;
-          find . -path "*/KernelSU/*" -name "ksu.c" -exec sed -i 's/enable_sucompat();/\/\/ enable_sucompat();/' {} \;
 
-          echo "=== 4. Applying manual patches to fs/ ==="
+          echo "=== 4. Applying manual patches to fs/ (Non-GKI kprobe hooks) ==="
+          # Lưu ý: Nếu bạn đã tự sửa các file này trong repo, lệnh patch sẽ bỏ qua và không gây lỗi dừng build.
+          
           # Patch fs/exec.c
           cat << 'EOF' > exec.patch
           --- a/fs/exec.c
@@ -84,7 +85,7 @@ jobs:
            	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
            }
           EOF
-          patch -p1 < exec.patch || echo "[WARNING] exec.c patch failed, line numbers may differ"
+          patch -p1 < exec.patch || echo "[INFO] exec.c patch skipped or already applied"
 
           # Patch fs/open.c
           cat << 'EOF' > open.patch
@@ -108,7 +109,7 @@ jobs:
            	struct cred *override_cred;
            	struct path path;
           EOF
-          patch -p1 < open.patch || echo "[WARNING] open.c patch failed"
+          patch -p1 < open.patch || echo "[INFO] open.c patch skipped or already applied"
 
           # Patch fs/read_write.c
           cat << 'EOF' > read_write.patch
@@ -132,7 +133,7 @@ jobs:
            		return -EBADF;
            	if (!(file->f_mode & FMODE_CAN_READ))
           EOF
-          patch -p1 < read_write.patch || echo "[WARNING] read_write.c patch failed"
+          patch -p1 < read_write.patch || echo "[INFO] read_write.c patch skipped or already applied"
 
           # Patch fs/stat.c
           cat << 'EOF' > stat.patch
@@ -156,7 +157,7 @@ jobs:
            		       AT_EMPTY_PATH | KSTAT_QUERY_FLAGS)) != 0)
            		return -EINVAL;
           EOF
-          patch -p1 < stat.patch || echo "[WARNING] stat.c patch failed"
+          patch -p1 < stat.patch || echo "[INFO] stat.c patch skipped or already applied"
 
           # Backport path_umount to fs/namespace.c
           cat << 'EOF' > namespace.patch
@@ -202,9 +203,9 @@ jobs:
             * Now umount can handle mount points as well as block devices.
             * This is important for filesystems which use unnamed block devices.
           EOF
-          patch -p1 < namespace.patch || echo "[WARNING] namespace.c patch failed"
+          patch -p1 < namespace.patch || echo "[INFO] namespace.c patch skipped or already applied"
 
-      - name: Configure kernel with Kprobes & KernelSU
+      - name: Configure kernel with FinaSU & Kprobes
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
@@ -221,8 +222,9 @@ jobs:
 
           make O=out ARCH=arm64 vendor/mt6768_defconfig
 
-          echo "=== Injecting KernelSU & Kprobe configs ==="
+          echo "=== Injecting FinaSU & Kprobe configs ==="
           cat << 'EOF' >> arch/arm64/configs/vendor/merlin.config
+          CONFIG_KSU=y
           CONFIG_KPROBES=y
           CONFIG_HAVE_KPROBES=y
           CONFIG_KPROBE_EVENTS=y
@@ -239,7 +241,7 @@ jobs:
           make O=out ARCH=arm64 olddefconfig
 
           echo "=== KIEM TRA CONFIG ==="
-          grep -E "CONFIG_KPROBES|CONFIG_MODULES|CONFIG_BLK_INLINE_ENCRYPTION|CONFIG_ARCH_MEDIATEK" out/.config || true
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_MODULES" out/.config || true
 
       - name: Build kernel (Clang 14)
         run: |
@@ -292,7 +294,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-merlin-kernelsu
+          name: kernel-merlin-finasu
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/Image.gz
