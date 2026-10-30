@@ -14,6 +14,24 @@ jobs:
         with:
           fetch-depth: 1
 
+      # === CACHE 1: Build output (incremental build) ===
+      - name: Cache build output
+        uses: actions/cache@v4
+        with:
+          path: out/
+          key: build-output-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            build-output-${{ runner.os }}-
+
+      # === CACHE 2: Compiler cache (ccache) ===
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache/
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -86,17 +104,13 @@ jobs:
           fi
 
           echo "=== 5. SMART -Werror removal (Preserve -Werror=xxx flags) ==="
-          # Dùng Perl với negative lookahead (?!=) để CHỈ xóa -Werror khi KHÔNG có = theo sau
-          # Giữ nguyên -Werror=implicit-function-declaration, -Werror=strict-prototypes, v.v.
           if [ -f Makefile ]; then
               perl -i -pe 's/-Werror(?![a-zA-Z=])//g' Makefile
               echo "[+] Removed standalone -Werror from main Makefile (preserved -Werror=xxx)"
           fi
-          # Áp dụng cho scripts/Makefile.*
           find scripts -name "Makefile*" -exec perl -i -pe 's/-Werror(?![a-zA-Z=])//g' {} \; 2>/dev/null || true
           echo "[+] Removed standalone -Werror from scripts/Makefile"
 
-          # Verify: đảm bảo không còn cờ bị phá
           if grep -q "\-implicit-function-declaration" Makefile 2>/dev/null; then
               echo "[!] WARNING: Found broken flags, fixing..."
               sed -i 's/-implicit-function-declaration//g' Makefile
@@ -157,7 +171,6 @@ jobs:
           ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m out/.config arch/arm64/configs/vendor/merlin.config
           make O=out ARCH=arm64 olddefconfig
           
-          # Force disable inline encryption
           sed -i 's/CONFIG_BLK_INLINE_ENCRYPTION=y/CONFIG_BLK_INLINE_ENCRYPTION=n/g' out/.config
           sed -i 's/CONFIG_FS_ENCRYPTION=y/CONFIG_FS_ENCRYPTION=n/g' out/.config
           make O=out ARCH=arm64 olddefconfig
@@ -179,10 +192,19 @@ jobs:
           export OBJCOPY=llvm-objcopy
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
+          
+          # === ENABLE CCACHE ===
+          export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
+          ccache -z  # Reset statistics
+          ccache -M 10G  # Set max cache size to 10GB
 
           set -eo pipefail
-          echo "Starting kernel build (with smart -Werror removal)..."
+          echo "Starting kernel build with ccache enabled..."
           make O=out ARCH=arm64 -j$(nproc) Image.gz-dtb 2>&1 | tee build.log
+          
+          # Show ccache statistics
+          echo "=== CCACHE STATISTICS ==="
+          ccache -s
 
       - name: Show errors if failed
         if: failure()
