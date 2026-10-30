@@ -1,4 +1,4 @@
-name: Build MT6768 Kernel for Merlin (with FinaSU Stable)
+name: Build MT6768 Kernel for Merlin (KernelSU Next + FinaSU Manager)
 
 on:
   workflow_dispatch:
@@ -25,7 +25,8 @@ jobs:
             clang-14 lld-14 llvm-14 \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
             gcc-arm-linux-gnueabi g++-arm-linux-gnueabi \
-            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+            openssl
 
           sudo ln -sf /usr/bin/clang-14 /usr/local/bin/clang
           sudo ln -sf /usr/bin/ld.lld-14 /usr/local/bin/ld.lld
@@ -43,10 +44,11 @@ jobs:
       - name: Prepare output dir
         run: mkdir -p out
 
-      - name: Setup FinaSU & Apply Compatibility Patches
+      - name: Setup KernelSU Next & Apply Patches
         run: |
-          echo "=== 1. Running FinaSU setup.sh (Using 'master' branch) ==="
-          curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash -s master
+          echo "=== 1. Running KernelSU Next setup.sh ==="
+          # Dùng script của KernelSU Next (ổn định cho kernel 4.19)
+          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           
           echo "=== 2. Fixing MODULE_IMPORT_NS for kernel < 5.10 ==="
           grep -rl "MODULE_IMPORT_NS" --include="*.c" . > /tmp/fix_ns.txt || true
@@ -57,7 +59,7 @@ jobs:
               echo "[+] Removed MODULE_IMPORT_NS declarations."
           fi
 
-          echo "=== 3. Fixing blk-crypto inline errors (Kernel 4.19 compatibility) ==="
+          echo "=== 3. Fixing blk-crypto inline errors ==="
           if [ -f include/linux/keyslot-manager.h ]; then
               sed -i 's/always_inline inline/inline/g' include/linux/keyslot-manager.h
           fi
@@ -66,11 +68,9 @@ jobs:
           fi
           echo "[+] Patched crypto headers."
 
-          echo "=== 4. Fixing file_wrapper.c for older kernels (Simple sed approach) ==="
+          echo "=== 4. Fixing file_wrapper.c for older kernels ==="
           F=$(find . -name "file_wrapper.c" -path "*/kernelsu/*" | head -1)
           if [ -n "$F" ] && [ -f "$F" ]; then
-              echo "[+] Found file_wrapper.c at: $F"
-              # XÓA HOÀN TOÀN các dòng chứa iopoll, remap_file_range, REMAP_FILE_DEDUP
               sed -i '/iopoll/d' "$F"
               sed -i '/remap_file_range/d' "$F"
               sed -i '/REMAP_FILE_DEDUP/d' "$F"
@@ -84,15 +84,7 @@ jobs:
               echo "[+] Patched seccomp_cache.c"
           fi
 
-          echo "=== 6. Safely disabling supercall.c advanced features for < 5.10 ==="
-          SU=$(find . -name "supercall.c" -path "*supercall*" | head -1)
-          if [ -n "$SU" ] && [ -f "$SU" ]; then
-              sed -i '1i #if 0 /* Disabled for kernel < 5.10 compatibility */' "$SU"
-              echo '#endif /* Disabled */' >> "$SU"
-              echo "[+] Disabled supercall.c advanced features."
-          fi
-
-          echo "=== 7. Applying manual kprobe hooks to fs/ ==="
+          echo "=== 6. Applying manual kprobe hooks to fs/ ==="
           # Patch fs/exec.c
           cat << 'EOF' > exec.patch
           --- a/fs/exec.c
@@ -172,7 +164,7 @@ jobs:
           EOF
           patch -p1 < stat.patch || echo "[INFO] stat.c patch skipped"
 
-      - name: Configure kernel with FinaSU & Kprobes
+      - name: Configure kernel with FinaSU Manager signature
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
@@ -189,20 +181,39 @@ jobs:
 
           make O=out ARCH=arm64 vendor/mt6768_defconfig
 
-          echo "=== Injecting FinaSU & Kprobe configs ==="
-          cat << 'EOF' >> arch/arm64/configs/vendor/merlin.config
-          CONFIG_KSU=y
-          CONFIG_KPROBES=y
-          CONFIG_HAVE_KPROBES=y
-          CONFIG_KPROBE_EVENTS=y
-          CONFIG_MODULES=y
-          CONFIG_MODULE_FORCE_LOAD=y
-          CONFIG_MODULE_FORCE_UNLOAD=y
-          CONFIG_BLK_INLINE_ENCRYPTION=n
-          CONFIG_FS_ENCRYPTION=n
-          CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y
-          CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES="mediatek/mt6768"
-          EOF
+          echo "=== Extracting FinaSU Manager signature ==="
+          # Tải FinaSU Manager APK
+          wget -q https://github.com/LyraVoid/FinaSU/releases/latest/download/FinaSU_Manager.apk -O manager.apk || {
+              echo "[WARNING] Could not download FinaSU Manager, using default signature"
+              KSU_EXPECTED_SIZE="0x033b"
+              KSU_EXPECTED_HASH="c371061b19d8c7d7d6133c6a9bafe198fa944e50c1b31c9d8daa8d7f1fc2d2d6"
+          }
+          
+          if [ -f manager.apk ]; then
+              # Giải nén và lấy chữ ký
+              unzip -q manager.apk META-INF/CERT.RSA
+              KSU_EXPECTED_SIZE=$(stat -c%s META-INF/CERT.RSA)
+              KSU_EXPECTED_HASH=$(openssl dgst -sha256 META-INF/CERT.RSA | awk '{print $2}')
+              echo "[+] FinaSU Manager signature size: 0x$(printf '%x' $KSU_EXPECTED_SIZE)"
+              echo "[+] FinaSU Manager signature hash: $KSU_EXPECTED_HASH"
+          fi
+
+          echo "=== Injecting KernelSU Next + FinaSU Manager configs ==="
+          cat << EOF >> arch/arm64/configs/vendor/merlin.config
+CONFIG_KSU=y
+CONFIG_KPROBES=y
+CONFIG_HAVE_KPROBES=y
+CONFIG_KPROBE_EVENTS=y
+CONFIG_MODULES=y
+CONFIG_MODULE_FORCE_LOAD=y
+CONFIG_MODULE_FORCE_UNLOAD=y
+CONFIG_BLK_INLINE_ENCRYPTION=n
+CONFIG_FS_ENCRYPTION=n
+CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y
+CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES="mediatek/mt6768"
+CONFIG_KSU_EXPECTED_SIZE=0x$(printf '%x' $KSU_EXPECTED_SIZE)
+CONFIG_KSU_EXPECTED_HASH="$KSU_EXPECTED_HASH"
+EOF
 
           echo "=== Merge merlin.config ==="
           ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m \
@@ -212,7 +223,7 @@ jobs:
           make O=out ARCH=arm64 olddefconfig
 
           echo "=== VERIFY CONFIG ==="
-          grep -E "CONFIG_KSU=y|CONFIG_KPROBES=y" out/.config || echo "WARNING: Config missing!"
+          grep -E "CONFIG_KSU=y|CONFIG_KPROBES=y|CONFIG_KSU_EXPECTED" out/.config || echo "WARNING: Config missing!"
 
       - name: Build kernel (Clang 14)
         run: |
@@ -226,7 +237,7 @@ jobs:
 
           set -eo pipefail
           
-          echo "Starting kernel build with FinaSU..."
+          echo "Starting kernel build with KernelSU Next + FinaSU Manager..."
           make O=out ARCH=arm64 -j$(nproc) \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -268,7 +279,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-merlin-finasu
+          name: kernel-merlin-ksunext-finasu
           path: |
             out/arch/arm64/boot/Image*
             out/arch/arm64/boot/dts/mediatek/*.dtb
