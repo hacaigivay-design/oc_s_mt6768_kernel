@@ -48,33 +48,59 @@ jobs:
           echo "=== 1. Running FinaSU setup.sh ==="
           curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash
 
-          echo "=== 2. Fixing MODULE_IMPORT_NS compilation error (Bulletproof method) ==="
-          # Xóa HOÀN TOÀN bất kỳ dòng nào chứa MODULE_IMPORT_NS trong file .c của kernelsu
-          find . -path "*/kernelsu/*" -name "*.c" -exec sed -i '/MODULE_IMPORT_NS/d' {} \;
+          echo "=== 2. Fixing MODULE_IMPORT_NS (Bulletproof - grep based) ==="
+          # Tìm TẤT CẢ file .c chứa MODULE_IMPORT_NS trong toàn bộ source, bất kể symlink
+          echo "[+] Searching for MODULE_IMPORT_NS in all .c files..."
+          grep -rl "MODULE_IMPORT_NS" --include="*.c" . > /tmp/files_to_fix.txt || true
           
-          echo "[+] Verifying fix:"
-          if grep -rn "MODULE_IMPORT_NS" drivers/kernelsu/ 2>/dev/null; then
-              echo "[!] Warning: MODULE_IMPORT_NS still found!"
+          if [ -s /tmp/files_to_fix.txt ]; then
+              echo "[+] Found files containing MODULE_IMPORT_NS:"
+              cat /tmp/files_to_fix.txt
+              echo "[+] Removing MODULE_IMPORT_NS lines from these files..."
+              while IFS= read -r f; do
+                  sed -i '/MODULE_IMPORT_NS/d' "$f"
+                  echo "    - Fixed: $f"
+              done < /tmp/files_to_fix.txt
           else
-              echo "[+] SUCCESS: All MODULE_IMPORT_NS lines have been removed."
+              echo "[!] No files containing MODULE_IMPORT_NS found."
           fi
           
+          echo ""
+          echo "[+] Verifying fix (should be empty):"
+          grep -rn "MODULE_IMPORT_NS" --include="*.c" . || echo "[+] SUCCESS: No MODULE_IMPORT_NS remaining!"
+
+          echo ""
           echo "=== 3. Disabling enable_sucompat() in FinaSU ==="
-          find . -path "*/kernelsu/*" -name "ksu.c" -exec sed -i 's/enable_sucompat();/\/\/ enable_sucompat();/' {} \;
-
-          echo "=== 4. Fixing file_wrapper.c for older kernels (iopoll / remap_file_range) ==="
-          FILE="drivers/kernelsu/infra/file_wrapper.c"
-          if [ -f "$FILE" ]; then
-              sed -i 's|return orig->f_op->iopoll(kiocb, spin);|return -EOPNOTSUPP; /* iopoll stub */|' "$FILE"
-              sed -i 's|if (remap_flags & REMAP_FILE_DEDUP) {|if (0) { /* REMAP_FILE_DEDUP stub */|' "$FILE"
-              sed -i 's|return orig->f_op->remap_file_range(file_in, pos_in, orig, pos_out, len, remap_flags);|return -EOPNOTSUPP; /* remap stub */|' "$FILE"
-              sed -i 's|return orig->f_op->remap_file_range(orig, pos_in, file_out, pos_out, len, remap_flags);|return -EOPNOTSUPP; /* remap stub */|' "$FILE"
-              sed -i 's|p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;|p->ops.iopoll = NULL; /* iopoll stub */|' "$FILE"
-              echo "[+] Successfully patched file_wrapper.c for older kernel compatibility"
-          else
-              echo "[!] file_wrapper.c not found, skipping this fix"
+          grep -rl "enable_sucompat();" --include="*.c" . > /tmp/ksu_files.txt || true
+          if [ -s /tmp/ksu_files.txt ]; then
+              while IFS= read -r f; do
+                  sed -i 's/enable_sucompat();/\/\/ enable_sucompat();/' "$f"
+                  echo "    - Disabled in: $f"
+              done < /tmp/ksu_files.txt
           fi
 
+          echo ""
+          echo "=== 4. Fixing file_wrapper.c for older kernels ==="
+          # Tìm file thực tế (có thể qua symlink)
+          FILE_WRAPPER=$(find . -name "file_wrapper.c" -path "*/kernelsu/*" 2>/dev/null | head -1)
+          if [ -z "$FILE_WRAPPER" ]; then
+              # Fallback: tìm trong FinaSU gốc
+              FILE_WRAPPER=$(find . -name "file_wrapper.c" -path "*/FinaSU/*" 2>/dev/null | head -1)
+          fi
+          
+          if [ -n "$FILE_WRAPPER" ] && [ -f "$FILE_WRAPPER" ]; then
+              echo "[+] Found file_wrapper.c at: $FILE_WRAPPER"
+              sed -i 's|return orig->f_op->iopoll(kiocb, spin);|return -EOPNOTSUPP; /* iopoll stub */|' "$FILE_WRAPPER"
+              sed -i 's|if (remap_flags & REMAP_FILE_DEDUP) {|if (0) { /* REMAP_FILE_DEDUP stub */|' "$FILE_WRAPPER"
+              sed -i 's|return orig->f_op->remap_file_range(file_in, pos_in, orig, pos_out, len, remap_flags);|return -EOPNOTSUPP; /* remap stub */|' "$FILE_WRAPPER"
+              sed -i 's|return orig->f_op->remap_file_range(orig, pos_in, file_out, pos_out, len, remap_flags);|return -EOPNOTSUPP; /* remap stub */|' "$FILE_WRAPPER"
+              sed -i 's|p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;|p->ops.iopoll = NULL; /* iopoll stub */|' "$FILE_WRAPPER"
+              echo "[+] Successfully patched file_wrapper.c"
+          else
+              echo "[!] file_wrapper.c not found, skipping"
+          fi
+
+          echo ""
           echo "=== 5. Applying manual patches to fs/ (Non-GKI kprobe hooks) ==="
           # Patch fs/exec.c
           cat << 'EOF' > exec.patch
