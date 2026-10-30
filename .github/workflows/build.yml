@@ -48,8 +48,16 @@ jobs:
           echo "=== 1. Running FinaSU setup.sh ==="
           curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash
 
-          echo "=== 2. Fixing MODULE_IMPORT_NS compilation error ==="
-          find . -path "*/kernelsu/*" -name "*.c" -exec sed -i 's/MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);/\/\/ MODULE_IMPORT_NS disabled for non-GKI/' {} \;
+          echo "=== 2. Fixing MODULE_IMPORT_NS compilation error (Bulletproof method) ==="
+          # Xóa HOÀN TOÀN bất kỳ dòng nào chứa MODULE_IMPORT_NS trong file .c của kernelsu
+          find . -path "*/kernelsu/*" -name "*.c" -exec sed -i '/MODULE_IMPORT_NS/d' {} \;
+          
+          echo "[+] Verifying fix:"
+          if grep -rn "MODULE_IMPORT_NS" drivers/kernelsu/ 2>/dev/null; then
+              echo "[!] Warning: MODULE_IMPORT_NS still found!"
+          else
+              echo "[+] SUCCESS: All MODULE_IMPORT_NS lines have been removed."
+          fi
           
           echo "=== 3. Disabling enable_sucompat() in FinaSU ==="
           find . -path "*/kernelsu/*" -name "ksu.c" -exec sed -i 's/enable_sucompat();/\/\/ enable_sucompat();/' {} \;
@@ -57,14 +65,10 @@ jobs:
           echo "=== 4. Fixing file_wrapper.c for older kernels (iopoll / remap_file_range) ==="
           FILE="drivers/kernelsu/infra/file_wrapper.c"
           if [ -f "$FILE" ]; then
-              # Stub iopoll return
-              sed -i 's|return orig->f_op->iopoll(kiocb, spin);|return -EOPNOTSUPP; /* iopoll stub for older kernel */|' "$FILE"
-              # Stub REMAP_FILE_DEDUP check
+              sed -i 's|return orig->f_op->iopoll(kiocb, spin);|return -EOPNOTSUPP; /* iopoll stub */|' "$FILE"
               sed -i 's|if (remap_flags & REMAP_FILE_DEDUP) {|if (0) { /* REMAP_FILE_DEDUP stub */|' "$FILE"
-              # Stub remap_file_range calls (2 variations)
-              sed -i 's|return orig->f_op->remap_file_range(file_in, pos_in, orig, pos_out, len, remap_flags);|return -EOPNOTSUPP; /* remap_file_range stub */|' "$FILE"
-              sed -i 's|return orig->f_op->remap_file_range(orig, pos_in, file_out, pos_out, len, remap_flags);|return -EOPNOTSUPP; /* remap_file_range stub */|' "$FILE"
-              # Stub iopoll assignment
+              sed -i 's|return orig->f_op->remap_file_range(file_in, pos_in, orig, pos_out, len, remap_flags);|return -EOPNOTSUPP; /* remap stub */|' "$FILE"
+              sed -i 's|return orig->f_op->remap_file_range(orig, pos_in, file_out, pos_out, len, remap_flags);|return -EOPNOTSUPP; /* remap stub */|' "$FILE"
               sed -i 's|p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;|p->ops.iopoll = NULL; /* iopoll stub */|' "$FILE"
               echo "[+] Successfully patched file_wrapper.c for older kernel compatibility"
           else
