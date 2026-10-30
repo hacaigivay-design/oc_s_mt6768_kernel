@@ -47,7 +47,6 @@ jobs:
       - name: Setup KernelSU Next & Apply Patches
         run: |
           echo "=== 1. Running KernelSU Next setup.sh ==="
-          # Dùng script của KernelSU Next (ổn định cho kernel 4.19)
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           
           echo "=== 2. Fixing MODULE_IMPORT_NS for kernel < 5.10 ==="
@@ -85,7 +84,6 @@ jobs:
           fi
 
           echo "=== 6. Applying manual kprobe hooks to fs/ ==="
-          # Patch fs/exec.c
           cat << 'EOF' > exec.patch
           --- a/fs/exec.c
           +++ b/fs/exec.c
@@ -112,7 +110,6 @@ jobs:
           EOF
           patch -p1 < exec.patch || echo "[INFO] exec.c patch skipped"
 
-          # Patch fs/open.c
           cat << 'EOF' > open.patch
           --- a/fs/open.c
           +++ b/fs/open.c
@@ -128,7 +125,6 @@ jobs:
           EOF
           patch -p1 < open.patch || echo "[INFO] open.c patch skipped"
 
-          # Patch fs/read_write.c
           cat << 'EOF' > read_write.patch
           --- a/fs/read_write.c
           +++ b/fs/read_write.c
@@ -148,7 +144,6 @@ jobs:
           EOF
           patch -p1 < read_write.patch || echo "[INFO] read_write.c patch skipped"
 
-          # Patch fs/stat.c
           cat << 'EOF' > stat.patch
           --- a/fs/stat.c
           +++ b/fs/stat.c
@@ -164,7 +159,38 @@ jobs:
           EOF
           patch -p1 < stat.patch || echo "[INFO] stat.c patch skipped"
 
-      - name: Configure kernel with FinaSU Manager signature
+      - name: Extract FinaSU Manager signature
+        run: |
+          echo "=== Extracting FinaSU Manager signature ==="
+          
+          # Định nghĩa biến mặc định (signature của KernelSU Next)
+          DEFAULT_SIZE="0x033b"
+          DEFAULT_HASH="c371061b19d8c7d7d6133c6a9bafe198fa944e50c1b31c9d8daa8d7f1fc2d2d6"
+          
+          # Thử tải FinaSU Manager APK
+          if wget -q https://github.com/LyraVoid/FinaSU/releases/latest/download/FinaSU_Manager.apk -O manager.apk 2>/dev/null; then
+              echo "[+] Downloaded FinaSU Manager APK"
+              if unzip -q manager.apk META-INF/CERT.RSA 2>/dev/null && [ -f META-INF/CERT.RSA ]; then
+                  KSU_EXPECTED_SIZE=$(stat -c%s META-INF/CERT.RSA)
+                  KSU_EXPECTED_HASH=$(openssl dgst -sha256 META-INF/CERT.RSA | awk '{print $2}')
+                  echo "[+] FinaSU Manager signature size: 0x$(printf '%x' $KSU_EXPECTED_SIZE)"
+                  echo "[+] FinaSU Manager signature hash: $KSU_EXPECTED_HASH"
+                  
+                  # Lưu vào file để bước sau đọc
+                  echo "$KSU_EXPECTED_SIZE" > /tmp/ksu_size
+                  echo "$KSU_EXPECTED_HASH" > /tmp/ksu_hash
+              else
+                  echo "[!] Could not extract signature, using default"
+                  echo "$DEFAULT_SIZE" > /tmp/ksu_size
+                  echo "$DEFAULT_HASH" > /tmp/ksu_hash
+              fi
+          else
+              echo "[!] Could not download APK, using default signature"
+              echo "$DEFAULT_SIZE" > /tmp/ksu_size
+              echo "$DEFAULT_HASH" > /tmp/ksu_hash
+          fi
+
+      - name: Configure kernel
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
@@ -181,39 +207,27 @@ jobs:
 
           make O=out ARCH=arm64 vendor/mt6768_defconfig
 
-          echo "=== Extracting FinaSU Manager signature ==="
-          # Tải FinaSU Manager APK
-          wget -q https://github.com/LyraVoid/FinaSU/releases/latest/download/FinaSU_Manager.apk -O manager.apk || {
-              echo "[WARNING] Could not download FinaSU Manager, using default signature"
-              KSU_EXPECTED_SIZE="0x033b"
-              KSU_EXPECTED_HASH="c371061b19d8c7d7d6133c6a9bafe198fa944e50c1b31c9d8daa8d7f1fc2d2d6"
-          }
-          
-          if [ -f manager.apk ]; then
-              # Giải nén và lấy chữ ký
-              unzip -q manager.apk META-INF/CERT.RSA
-              KSU_EXPECTED_SIZE=$(stat -c%s META-INF/CERT.RSA)
-              KSU_EXPECTED_HASH=$(openssl dgst -sha256 META-INF/CERT.RSA | awk '{print $2}')
-              echo "[+] FinaSU Manager signature size: 0x$(printf '%x' $KSU_EXPECTED_SIZE)"
-              echo "[+] FinaSU Manager signature hash: $KSU_EXPECTED_HASH"
-          fi
+          # Đọc signature từ file
+          KSU_SIZE=$(cat /tmp/ksu_size)
+          KSU_HASH=$(cat /tmp/ksu_hash)
+          KSU_SIZE_HEX=$(printf '%x' "$KSU_SIZE")
 
           echo "=== Injecting KernelSU Next + FinaSU Manager configs ==="
           cat << EOF >> arch/arm64/configs/vendor/merlin.config
-CONFIG_KSU=y
-CONFIG_KPROBES=y
-CONFIG_HAVE_KPROBES=y
-CONFIG_KPROBE_EVENTS=y
-CONFIG_MODULES=y
-CONFIG_MODULE_FORCE_LOAD=y
-CONFIG_MODULE_FORCE_UNLOAD=y
-CONFIG_BLK_INLINE_ENCRYPTION=n
-CONFIG_FS_ENCRYPTION=n
-CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y
-CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES="mediatek/mt6768"
-CONFIG_KSU_EXPECTED_SIZE=0x$(printf '%x' $KSU_EXPECTED_SIZE)
-CONFIG_KSU_EXPECTED_HASH="$KSU_EXPECTED_HASH"
-EOF
+          CONFIG_KSU=y
+          CONFIG_KPROBES=y
+          CONFIG_HAVE_KPROBES=y
+          CONFIG_KPROBE_EVENTS=y
+          CONFIG_MODULES=y
+          CONFIG_MODULE_FORCE_LOAD=y
+          CONFIG_MODULE_FORCE_UNLOAD=y
+          CONFIG_BLK_INLINE_ENCRYPTION=n
+          CONFIG_FS_ENCRYPTION=n
+          CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y
+          CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES="mediatek/mt6768"
+          CONFIG_KSU_EXPECTED_SIZE=0x${KSU_SIZE_HEX}
+          CONFIG_KSU_EXPECTED_HASH="${KSU_HASH}"
+          EOF
 
           echo "=== Merge merlin.config ==="
           ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m \
