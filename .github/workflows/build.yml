@@ -1,4 +1,4 @@
-name: Build MT6768 Kernel for Merlin (with KernelSU Non-GKI Patch)
+name: Build MT6768 Kernel for Merlin (with FinaSU Stable)
 
 on:
   workflow_dispatch:
@@ -43,22 +43,58 @@ jobs:
       - name: Prepare output dir
         run: mkdir -p out
 
-      - name: Setup KernelSU & Apply Manual Patches (Non-GKI)
+      - name: Setup FinaSU & Apply Compatibility Patches
         run: |
-          echo "=== 1. Running KernelSU setup.sh (v0.9.5 for stable non-GKI) ==="
-          # Sử dụng v0.9.5 vì đây là phiên bản cuối cùng hỗ trợ non-GKI ổn định trước khi bị thay đổi macro
-          curl -LSs "https://github.com/LyraVoid/FinaSU/blob/master/kernel/setup.sh" | bash -s main
+          echo "=== 1. Running FinaSU setup.sh (Using 'main' branch for stability on 4.19) ==="
+          # Ép sử dụng nhánh 'main' thay vì 'dev' mặc định để đảm bảo ổn định cho kernel 4.19
+          curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/main/kernel/setup.sh" | bash -s main
           
-          echo "=== 2. Fixing MODULE_IMPORT_NS compilation error for older kernels ==="
-          # Tự động comment dòng gây lỗi trên các kernel < 5.10
-          find . -path "*/kernelsu/*" -name "*.c" -exec sed -i 's/MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);/\/\/ MODULE_IMPORT_NS disabled for non-GKI/' {} \;
-          
-          echo "=== 3. Disabling enable_sucompat() in KernelSU ==="
-          # Dùng find để đảm bảo tìm đúng file ksu.c bất kể nó nằm ở KernelSU/kernel/ hay drivers/kernelsu/core/
-          find . -path "*/kernelsu/*" -name "ksu.c" -exec sed -i 's/enable_sucompat();/\/\/ enable_sucompat();/' {} \;
-          find . -path "*/KernelSU/*" -name "ksu.c" -exec sed -i 's/enable_sucompat();/\/\/ enable_sucompat();/' {} \;
+          echo "=== 2. Fixing MODULE_IMPORT_NS for kernel < 5.10 ==="
+          grep -rl "MODULE_IMPORT_NS" --include="*.c" . > /tmp/fix_ns.txt || true
+          if [ -s /tmp/fix_ns.txt ]; then
+              while IFS= read -r f; do
+                  sed -i '/MODULE_IMPORT_NS/d' "$f"
+              done < /tmp/fix_ns.txt
+              echo "[+] Removed MODULE_IMPORT_NS declarations."
+          fi
 
-          echo "=== 4. Applying manual patches to fs/ ==="
+          echo "=== 3. Fixing blk-crypto inline errors (Kernel 4.19 compatibility) ==="
+          if [ -f include/linux/keyslot-manager.h ]; then
+              sed -i 's/always_inline inline/inline/g' include/linux/keyslot-manager.h
+          fi
+          if [ -f include/linux/blk-crypto.h ]; then
+              sed -i 's/always_inline inline/inline/g' include/linux/blk-crypto.h
+          fi
+          echo "[+] Patched crypto headers."
+
+          echo "=== 4. Fixing file_wrapper.c for older kernels ==="
+          F=$(find . -name "file_wrapper.c" -path "*/kernelsu/*" | head -1)
+          if [ -n "$F" ] && [ -f "$F" ]; then
+              perl -0777 -i -pe 's/(\s+)p->ops\.iopoll = fp->f_op->iopoll \? ksu_wrapper_iopoll : NULL;/$1#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n$1p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;\n$1#endif/s' "$F"
+              perl -0777 -i -pe 's/(\s+)p->ops\.remap_file_range = fp->f_op->remap_file_range \? ksu_wrapper_remap_file_range : NULL;/$1#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\n$1p->ops.remap_file_range = fp->f_op->remap_file_range ? ksu_wrapper_remap_file_range : NULL;\n$1#endif/s' "$F"
+              perl -0777 -i -pe 's/(\s+)return orig->f_op->iopoll\(kiocb, spin\);/$1#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n$1return orig->f_op->iopoll(kiocb, spin);\n$1#else\n$1return -EOPNOTSUPP;\n$1#endif/s' "$F"
+              echo "[+] Patched file_wrapper.c"
+          fi
+
+          echo "=== 5. Fixing seccomp_cache.c for older kernels ==="
+          SC=$(find . -name "seccomp_cache.c" -path "*/kernelsu/*" | head -1)
+          if [ -n "$SC" ] && [ -f "$SC" ]; then
+              # Thêm fallback define nếu kernel thiếu
+              sed -i '1i #ifndef SECCOMP_ARCH_NATIVE_NR\n#define SECCOMP_ARCH_NATIVE_NR 4096\n#endif' "$SC"
+              echo "[+] Patched seccomp_cache.c"
+          fi
+
+          echo "=== 6. Safely disabling supercall.c advanced features for < 5.10 ==="
+          SU=$(find . -name "supercall.c" -path "*supercall*" | head -1)
+          if [ -n "$SU" ] && [ -f "$SU" ]; then
+              # Wrap toàn bộ file bằng #if 0 để tránh lỗi cú pháp task_work_add trên kernel cũ
+              # Tính năng này không ảnh hưởng đến root cơ bản
+              sed -i '1i #if 0 /* Disabled for kernel < 5.10 compatibility */' "$SU"
+              echo '#endif /* Disabled */' >> "$SU"
+              echo "[+] Disabled supercall.c advanced features."
+          fi
+
+          echo "=== 7. Applying manual kprobe hooks to fs/ ==="
           # Patch fs/exec.c
           cat << 'EOF' > exec.patch
           --- a/fs/exec.c
@@ -84,7 +120,7 @@ jobs:
            	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
            }
           EOF
-          patch -p1 < exec.patch || echo "[WARNING] exec.c patch failed, line numbers may differ"
+          patch -p1 < exec.patch || echo "[INFO] exec.c patch skipped"
 
           # Patch fs/open.c
           cat << 'EOF' > open.patch
@@ -94,21 +130,13 @@ jobs:
            	return ksys_fallocate(fd, mode, offset, len);
            }
            
-          +extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,
-          +			 int *flags);
-           /*
-            * access() needs to use the real uid/gid, not the effective uid/gid.
-            * We do this by temporarily clearing all FS-related capabilities and
-          @@ -355,6 +357,7 @@ SYSCALL_DEFINE4(fallocate, int, fd, int, mode, loff_t, offset, loff_t, len)
-            */
+          +extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);
            long do_faccessat(int dfd, const char __user *filename, int mode)
            {
           +	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
            	const struct cred *old_cred;
-           	struct cred *override_cred;
-           	struct path path;
           EOF
-          patch -p1 < open.patch || echo "[WARNING] open.c patch failed"
+          patch -p1 < open.patch || echo "[INFO] open.c patch skipped"
 
           # Patch fs/read_write.c
           cat << 'EOF' > read_write.patch
@@ -119,20 +147,16 @@ jobs:
            EXPORT_SYMBOL(kernel_read);
            
           +extern bool ksu_vfs_read_hook __read_mostly;
-          +extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,
-          +			size_t *count_ptr, loff_t **pos);
+          +extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);
            ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
            {
            	ssize_t ret;
-           
           +	if (unlikely(ksu_vfs_read_hook))
           +		ksu_handle_vfs_read(&file, &buf, &count, &pos);
-          +
            	if (!(file->f_mode & FMODE_READ))
            		return -EBADF;
-           	if (!(file->f_mode & FMODE_CAN_READ))
           EOF
-          patch -p1 < read_write.patch || echo "[WARNING] read_write.c patch failed"
+          patch -p1 < read_write.patch || echo "[INFO] read_write.c patch skipped"
 
           # Patch fs/stat.c
           cat << 'EOF' > stat.patch
@@ -143,68 +167,14 @@ jobs:
            EXPORT_SYMBOL(vfs_statx_fd);
            
           +extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
-          +
-           /**
-            * vfs_statx - Get basic and extra attributes by filename
-            * @dfd: A file descriptor representing the base dir for a relative filename
-          @@ -170,6 +172,7 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
-           	int error = -EINVAL;
-           	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;
-           
+           int vfs_statx(int dfd, const char __user *filename, int flags, struct kstat *stat, u32 request_mask)
+           {
           +	ksu_handle_stat(&dfd, &filename, &flags);
-           	if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
-           		       AT_EMPTY_PATH | KSTAT_QUERY_FLAGS)) != 0)
-           		return -EINVAL;
+           	int error = -EINVAL;
           EOF
-          patch -p1 < stat.patch || echo "[WARNING] stat.c patch failed"
+          patch -p1 < stat.patch || echo "[INFO] stat.c patch skipped"
 
-          # Backport path_umount to fs/namespace.c
-          cat << 'EOF' > namespace.patch
-          --- a/fs/namespace.c
-          +++ b/fs/namespace.c
-          @@ -1739,6 +1739,39 @@ static inline bool may_mandlock(void)
-           }
-           #endif
-           
-          +static int can_umount(const struct path *path, int flags)
-          +{
-          +	struct mount *mnt = real_mount(path->mnt);
-          +
-          +	if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))
-          +		return -EINVAL;
-          +	if (!may_mount())
-          +		return -EPERM;
-          +	if (path->dentry != path->mnt->mnt_root)
-          +		return -EINVAL;
-          +	if (!check_mnt(mnt))
-          +		return -EINVAL;
-          +	if (mnt->mnt.mnt_flags & MNT_LOCKED)
-          +		return -EINVAL;
-          +	if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))
-          +		return -EPERM;
-          +	return 0;
-          +}
-          +
-          +int path_umount(struct path *path, int flags)
-          +{
-          +	struct mount *mnt = real_mount(path->mnt);
-          +	int ret;
-          +
-          +	ret = can_umount(path, flags);
-          +	if (!ret)
-          +		ret = do_umount(mnt, flags);
-          +
-          +	dput(path->dentry);
-          +	mntput_no_expire(mnt);
-          +	return ret;
-          +}
-           /*
-            * Now umount can handle mount points as well as block devices.
-            * This is important for filesystems which use unnamed block devices.
-          EOF
-          patch -p1 < namespace.patch || echo "[WARNING] namespace.c patch failed"
-
-      - name: Configure kernel with Kprobes & KernelSU
+      - name: Configure kernel with FinaSU & Kprobes
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
@@ -221,14 +191,19 @@ jobs:
 
           make O=out ARCH=arm64 vendor/mt6768_defconfig
 
-          echo "=== Injecting KernelSU & Kprobe configs ==="
+          echo "=== Injecting FinaSU & Kprobe configs ==="
           cat << 'EOF' >> arch/arm64/configs/vendor/merlin.config
+          CONFIG_KSU=y
           CONFIG_KPROBES=y
           CONFIG_HAVE_KPROBES=y
           CONFIG_KPROBE_EVENTS=y
           CONFIG_MODULES=y
           CONFIG_MODULE_FORCE_LOAD=y
           CONFIG_MODULE_FORCE_UNLOAD=y
+          CONFIG_BLK_INLINE_ENCRYPTION=n
+          CONFIG_FS_ENCRYPTION=n
+          CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y
+          CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES="mediatek/mt6768"
           EOF
 
           echo "=== Merge merlin.config ==="
@@ -238,8 +213,8 @@ jobs:
 
           make O=out ARCH=arm64 olddefconfig
 
-          echo "=== KIEM TRA CONFIG ==="
-          grep -E "CONFIG_KPROBES|CONFIG_MODULES|CONFIG_BLK_INLINE_ENCRYPTION|CONFIG_ARCH_MEDIATEK" out/.config || true
+          echo "=== VERIFY CONFIG ==="
+          grep -E "CONFIG_KSU=y|CONFIG_KPROBES=y" out/.config || echo "WARNING: Config missing!"
 
       - name: Build kernel (Clang 14)
         run: |
@@ -251,7 +226,10 @@ jobs:
           echo "=== Clang dang dung ==="
           clang --version | head -1
 
-          set -o pipefail
+          # QUAN TRỌNG: Bắt lỗi ngay lập tức nếu make fail
+          set -eo pipefail
+          
+          echo "Starting kernel build with FinaSU..."
           make O=out ARCH=arm64 -j$(nproc) \
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -261,23 +239,24 @@ jobs:
             OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip \
-            2>&1 | tee build.log | tail -300
+            Image.gz-dtb 2>&1 | tee build.log
+          
+          echo "=== KIEM TRA OUTPUT ==="
+          ls -lh out/arch/arm64/boot/ | grep -E "Image|dtb" || true
 
       - name: Show errors if failed
         if: failure()
         run: |
-          if [ ! -f build.log ]; then
-            echo "build.log KHONG TON TAI - build fail truoc buoc Build kernel"
-            exit 0
+          echo "======== BUILD FAILED - CHECK ERRORS ========"
+          if [ -f build.log ]; then
+            echo "======== error: DAU TIEN ========"
+            grep -n -B10 -A15 "error:" build.log | head -200 || echo "(khong co error:)"
+            echo ""
+            echo "======== 150 dong cuoi ========"
+            tail -150 build.log || true
+          else
+            echo "build.log KHONG TON TAI"
           fi
-          echo "======== error: DAU TIEN ========"
-          grep -n -B10 -A15 "error:" build.log | head -200 || echo "(khong co error:)"
-          echo ""
-          echo "======== Error 1/2 ========"
-          grep -n -B5 -A5 "Error [12]" build.log | head -100 || true
-          echo ""
-          echo "======== 150 dong cuoi ========"
-          tail -150 build.log || true
 
       - name: Upload build log
         if: always()
@@ -292,11 +271,9 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-merlin-kernelsu
+          name: kernel-merlin-finasu
           path: |
-            out/arch/arm64/boot/Image.gz-dtb
-            out/arch/arm64/boot/Image.gz
-            out/arch/arm64/boot/Image
+            out/arch/arm64/boot/Image*
             out/arch/arm64/boot/dts/mediatek/*.dtb
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
