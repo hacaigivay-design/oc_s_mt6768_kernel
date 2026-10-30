@@ -47,7 +47,7 @@ jobs:
         run: |
           echo "=== 1. Running KernelSU setup.sh (v0.9.5 for stable non-GKI) ==="
           # Sử dụng v0.9.5 vì đây là phiên bản cuối cùng hỗ trợ non-GKI ổn định trước khi bị thay đổi macro
-          curl -LSs "https://github.com/LyraVoid/FinaSU/blob/master/kernel/setup.sh" | bash -s v0.9.5
+          curl -LSs "https://github.com/LyraVoid/FinaSU/blob/master/kernel/setup.sh" | bash -s main
           
           echo "=== 2. Fixing MODULE_IMPORT_NS compilation error for older kernels ==="
           # Tự động comment dòng gây lỗi trên các kernel < 5.10
