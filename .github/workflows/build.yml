@@ -89,7 +89,7 @@ jobs:
           #include <linux/version.h>
           #include "klog.h"
           #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
-          int ksu_observer_init(void) { pr_info("observer: not supported on 4.19\n"); return 0; }
+          int ksu_observer_init(void) { pr_info("observer: not supported on 4.19"); return 0; }
           void ksu_observer_exit(void) { }
           #endif
           PKGEOF
@@ -103,7 +103,7 @@ jobs:
             echo "dynamic_manager.c: added version.h"
           fi
 
-          # 7b. dynamic_manager.c - stub ksu_dynamic_manager_persist
+          # 7b. dynamic_manager.c - stub ksu_dynamic_manager_persist (KHONG dung \n trong string)
           if [ -n "$DM" ]; then
             perl -0777 -i -pe '
               s{
@@ -118,19 +118,19 @@ jobs:
                     struct callback_head *cb;
                     rcu_read_lock();
                     tsk = get_pid_task(find_vpid(1), PIDTYPE_PID);
-                    if (!tsk) { rcu_read_unlock(); pr_err("dynamic_manager: find init task err\n"); return; }
+                    if (!tsk) { rcu_read_unlock(); pr_err("dynamic_manager: find init task err"); return; }
                     rcu_read_unlock();
                     cb = kzalloc(sizeof(*cb), GFP_KERNEL);
-                    if (!cb) { pr_err("dynamic_manager: alloc cb err\n"); goto put_task; }
+                    if (!cb) { pr_err("dynamic_manager: alloc cb err"); goto put_task; }
                     cb->func = do_persist_dynamic_manager;
-                    if (task_work_add(tsk, cb, TWA_RESUME)) { kfree(cb); pr_warn("dynamic_manager: add task_work failed\n"); }
+                    if (task_work_add(tsk, cb, TWA_RESUME)) { kfree(cb); pr_warn("dynamic_manager: add task_work failed"); }
                 put_task:
                     put_task_struct(tsk);
                 }
                 #else
                 void ksu_dynamic_manager_persist(void)
                 {
-                    pr_warn("dynamic_manager: persist not supported on kernel < 5.10\n");
+                    pr_warn("dynamic_manager: persist not supported on kernel < 5.10");
                 }
                 #endif
               }sx
