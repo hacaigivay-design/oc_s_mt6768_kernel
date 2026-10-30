@@ -1,4 +1,4 @@
-name: Build MT6768 Kernel with FinaSU (Fixed Artifact)
+name: Build MT6768 Kernel with FinaSU (Strict Error Checking)
 
 on:
   workflow_dispatch:
@@ -92,7 +92,6 @@ jobs:
           make O=out ARCH=arm64 vendor/mt6768_defconfig
           ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m out/.config arch/arm64/configs/vendor/merlin.config
           
-          # Thêm config FinaSU & SUSFS
           printf 'CONFIG_KSU=y\nCONFIG_KSU_MANUAL_HOOK=y\nCONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y\nCONFIG_KSU_SUSFS_SUS_PATH=y\nCONFIG_KSU_SUSFS_SUS_MOUNT=y\nCONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y\nCONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y\nCONFIG_KSU_SUSFS_SUS_KSTAT=y\nCONFIG_KSU_SUSFS_SUS_OVERLAYFS=y\nCONFIG_KSU_SUSFS_TRY_UMOUNT=y\nCONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y\nCONFIG_KSU_SUSFS_SPOOF_UNAME=y\nCONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y\nCONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y\nCONFIG_KSU_SUSFS_OPEN_REDIRECT=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=y\nCONFIG_KSU_SUSFS_SUS_SU=y\nCONFIG_KALLSYMS=y\nCONFIG_KALLSYMS_ALL=y\nCONFIG_KPROBES=y\nCONFIG_NOMOUNT=y\nCONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y\nCONFIG_BUILD_ARM64_DTB_OVERLAY_IMAGE=y\nCONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES="mediatek/mt6768"\n' >> out/.config
           
           make O=out ARCH=arm64 olddefconfig
@@ -115,24 +114,31 @@ jobs:
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
 
-          # QUAN TRỌNG: 'set -e' buộc workflow DỪNG NGAY nếu make lỗi, 
-          # tránh trường hợp build dở dang mà vẫn upload file rác (chỉ có dtb)
-          set -e 
+          # QUAN TRỌNG: 'set -eo pipefail' đảm bảo nếu 'make' lỗi, workflow sẽ DỪNG NGAY LẬP TỨC
+          # và không được phép tiếp tục sang bước upload.
+          set -eo pipefail
           
           echo "Starting kernel build with FinaSU..."
-          make O=out ARCH=arm64 -j$(nproc) Image.gz-dtb 2>&1 | tee build.log | tail -300
+          # Build target 'Image.gz-dtb' (hoặc fallback về 'Image dtbs' nếu tree của bạn yêu cầu)
+          make O=out ARCH=arm64 -j$(nproc) Image.gz-dtb 2>&1 | tee build.log
           
-          echo "=== Checking build output ==="
-          ls -lh out/arch/arm64/boot/ | grep -E "Image|dtb" || true
+          echo "=== KIEM TRA THU MUC OUTPUT SAU KHI BUILD ==="
+          ls -lh out/arch/arm64/boot/ || echo "Thu muc boot khong ton tai!"
+          find out/arch/arm64/boot/ -type f -name "Image*" || echo "Khong tim thay file Image"
 
       - name: Show errors if failed
         if: failure()
         run: |
-          echo "======== error: DAU TIEN ========"
-          grep -n -B10 -A15 "error:" build.log | head -200 || echo "(khong co error:)"
-          echo ""
-          echo "======== 150 dong cuoi ========"
-          tail -150 build.log || true
+          echo "======== BUILD FAILED - CHECK ERRORS ========"
+          if [ -f build.log ]; then
+            echo "======== error: DAU TIEN ========"
+            grep -n -B10 -A15 "error:" build.log | head -200 || echo "(khong co error:)"
+            echo ""
+            echo "======== 150 dong cuoi ========"
+            tail -150 build.log || true
+          else
+            echo "build.log KHONG TON TAI"
+          fi
 
       - name: Upload build log
         if: always()
@@ -148,13 +154,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: kernel-merlin-finasu
+          # Sử dụng wildcard để bắt TẤT CẢ các biến thể của file Image được tạo ra
           path: |
-            out/arch/arm64/boot/Image
-            out/arch/arm64/boot/Image.gz
-            out/arch/arm64/boot/Image.gz-dtb
-            out/arch/arm64/boot/Image-dtb
+            out/arch/arm64/boot/Image*
             out/arch/arm64/boot/dts/mediatek/*.dtb
-          # QUAN TRỌNG: 'error' ở đây sẽ báo đỏ workflow nếu không tìm thấy file Image, 
-          # giúp bạn biết ngay là build thất bại thay vì im lặng upload mỗi dtb
-          if-no-files-found: error 
+          if-no-files-found: error
           retention-days: 30
