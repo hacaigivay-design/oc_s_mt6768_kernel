@@ -62,9 +62,17 @@ jobs:
           # 3b. minmax.h -> kernel.h
           for f in $(grep -rl "linux/minmax.h" FinaSU/ 2>/dev/null); do
             sed -i 's|#include <linux/minmax.h>|#include <linux/kernel.h>|g' "$f" || true
-            echo "patched minmax.h in: $f"
           done
           echo "minmax.h OK"
+
+          # 3c. dispatch.c - them include
+          DI=$(find . -name "dispatch.c" -path "*supercall*" | head -1)
+          if [ -n "$DI" ]; then
+            grep -q "linux/sched/signal.h" "$DI" || sed -i '1i #include <linux/sched/signal.h>' "$DI" || true
+            grep -q "linux/sched/task.h" "$DI" || sed -i '1i #include <linux/sched/task.h>' "$DI" || true
+            grep -q "linux/init_task.h" "$DI" || sed -i '1i #include <linux/init_task.h>' "$DI" || true
+            echo "dispatch.c includes OK"
+          fi
 
           # 4. seccomp_cache.c
           SC=$(find . -name "seccomp_cache.c" | head -1)
