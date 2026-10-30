@@ -59,6 +59,13 @@ jobs:
             echo "file_wrapper.c OK"
           fi
 
+          # 3b. minmax.h -> kernel.h
+          for f in $(grep -rl "linux/minmax.h" FinaSU/ 2>/dev/null); do
+            sed -i 's|#include <linux/minmax.h>|#include <linux/kernel.h>|g' "$f" || true
+            echo "patched minmax.h in: $f"
+          done
+          echo "minmax.h OK"
+
           # 4. seccomp_cache.c
           SC=$(find . -name "seccomp_cache.c" | head -1)
           if [ -n "$SC" ]; then
@@ -235,7 +242,7 @@ jobs:
             echo "rules.c OK (stubbed)"
           fi
 
-          # 11. sepolicy.c - stub toan bo
+          # 11. sepolicy.c - stub
           SP=$(find . -name "sepolicy.c" -path "*selinux*" | head -1)
           if [ -n "$SP" ]; then
             cat > "$SP" << 'SPEOF'
