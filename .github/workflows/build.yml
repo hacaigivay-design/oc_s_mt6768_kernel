@@ -218,7 +218,7 @@ jobs:
             echo "app_profile.c OK"
           fi
 
-          # 10. rules.c - stub apply_kernelsu_rules + handle_sepolicy
+          # 10. rules.c - stub, KHONG include header noi bo
           RU=$(find . -name "rules.c" -path "*selinux*" | head -1)
           if [ -n "$RU" ]; then
             cat > "$RU" << 'RULEOF'
@@ -226,8 +226,8 @@ jobs:
           /* Stub for kernel 4.19 - selinux_policy API not available (requires 5.7+) */
           #include <linux/version.h>
           #include <linux/types.h>
+          #include <linux/uaccess.h>
           #include "klog.h"
-          #include "selinux/rules.h"
 
           #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)
           void apply_kernelsu_rules(void)
