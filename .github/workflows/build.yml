@@ -51,7 +51,6 @@ jobs:
 
           echo "=== 1. Bulletproof fix for blk-crypto inline errors ==="
           if [ -f include/linux/keyslot-manager.h ]; then
-              # Xóa mọi biến thể của inline trước hàm ksm_flock
               sed -i 's/__always_inline inline void ksm_flock/void ksm_flock/g' include/linux/keyslot-manager.h
               sed -i 's/inline void ksm_flock/void ksm_flock/g' include/linux/keyslot-manager.h
               sed -i 's/__always_inline void ksm_flock/void ksm_flock/g' include/linux/keyslot-manager.h
@@ -141,10 +140,9 @@ jobs:
           ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m out/.config arch/arm64/configs/vendor/merlin.config
           make O=out ARCH=arm64 olddefconfig
           
-          # EP CUNG tắt inline encryption trực tiếp trong .config để đảm bảo không bị ghi đè
+          # Force disable inline encryption
           sed -i 's/CONFIG_BLK_INLINE_ENCRYPTION=y/CONFIG_BLK_INLINE_ENCRYPTION=n/g' out/.config
           sed -i 's/CONFIG_FS_ENCRYPTION=y/CONFIG_FS_ENCRYPTION=n/g' out/.config
-          # Chạy lại olddefconfig để áp dụng thay đổi
           make O=out ARCH=arm64 olddefconfig
           
           echo "=== VERIFY CONFIG ==="
@@ -153,6 +151,7 @@ jobs:
       - name: Build Kernel
         run: |
           export ARCH=arm64
+          export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           export CC=clang
@@ -163,10 +162,18 @@ jobs:
           export OBJCOPY=llvm-objcopy
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
+          
+          # === THAY ĐỔI QUAN TRỌNG NHẤT ===
+          # Tắt -Werror để Clang 14 không coi warning là error
+          # Đây là giải pháp chuẩn cho kernel 4.19 build với compiler mới
+          export KCFLAGS="-Wno-error"
+          export KCFLAGS_KERNEL="-Wno-error"
 
           set -eo pipefail
-          echo "Starting kernel build..."
-          make O=out ARCH=arm64 -j$(nproc) Image.gz-dtb 2>&1 | tee build.log
+          echo "Starting kernel build with KCFLAGS=-Wno-error..."
+          make O=out ARCH=arm64 -j$(nproc) \
+            KCFLAGS="-Wno-error" \
+            Image.gz-dtb 2>&1 | tee build.log
 
       - name: Show errors if failed
         if: failure()
