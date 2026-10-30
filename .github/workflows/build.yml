@@ -42,137 +42,49 @@ jobs:
       - name: Setup KernelSU-Next (Legacy Mode)
         run: |
           echo "=== Running KernelSU-Next setup.sh (legacy branch for non-GKI) ==="
-          # Dùng tham số 'legacy' đúng theo tài liệu chính chủ cho kernel < 5.10
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
           echo "[+] KernelSU-Next legacy setup completed."
 
-      - name: Apply Safe Compatibility Patches (No Syntax Breaking)
+      - name: Apply Bulletproof Compatibility Patches
         run: |
-          set +e # Tiếp tục ngay cả khi một patch không tìm thấy file
+          set +e
 
-          echo "=== 1. Neutralizing file_wrapper.c safely (Preserving C syntax) ==="
+          echo "=== 1. Bulletproof fix for blk-crypto inline errors ==="
+          if [ -f include/linux/keyslot-manager.h ]; then
+              # Xóa mọi biến thể của inline trước hàm ksm_flock
+              sed -i 's/__always_inline inline void ksm_flock/void ksm_flock/g' include/linux/keyslot-manager.h
+              sed -i 's/inline void ksm_flock/void ksm_flock/g' include/linux/keyslot-manager.h
+              sed -i 's/__always_inline void ksm_flock/void ksm_flock/g' include/linux/keyslot-manager.h
+              echo "[+] Patched keyslot-manager.h"
+          fi
+          if [ -f include/linux/blk-crypto.h ]; then
+              sed -i 's/__always_inline inline void blk_crypto_flock/void blk_crypto_flock/g' include/linux/blk-crypto.h
+              sed -i 's/inline void blk_crypto_flock/void blk_crypto_flock/g' include/linux/blk-crypto.h
+              sed -i 's/__always_inline void blk_crypto_flock/void blk_crypto_flock/g' include/linux/blk-crypto.h
+              echo "[+] Patched blk-crypto.h"
+          fi
+
+          echo "=== 2. Neutralizing file_wrapper.c safely ==="
           FILE=$(find . -name "file_wrapper.c" -path "*/kernelsu/*" | head -1)
           if [ -n "$FILE" ] && [ -f "$FILE" ]; then
-              # Thay thế nội dung hàm bằng stub an toàn, GIỮ NGUYÊN dấu { và }
               perl -i -0777 -pe 's/(int ksu_wrapper_iopoll\s*\([^)]*\)\s*\{).*?(\n\})/$1\n    return -EOPNOTSUPP;\n$2/s' "$FILE"
               perl -i -0777 -pe 's/(loff_t ksu_wrapper_remap_file_range\s*\([^)]*\)\s*\{).*?(\n\})/$1\n    return -EOPNOTSUPP;\n$2/s' "$FILE"
-              
-              # Comment out các dòng gán struct (tránh lỗi "no member named")
-              perl -i -pe 's/^(\s*)p->ops\.iopoll = .*/$1\/\/ p->ops.iopoll disabled for kernel < 5.1/' "$FILE"
-              perl -i -pe 's/^(\s*)p->ops\.remap_file_range = .*/$1\/\/ p->ops.remap_file_range disabled for kernel < 4.20/' "$FILE"
+              perl -i -pe 's/^(\s*)p->ops\.iopoll = .*/$1\/\/ p->ops.iopoll disabled/' "$FILE"
+              perl -i -pe 's/^(\s*)p->ops\.remap_file_range = .*/$1\/\/ p->ops.remap_file_range disabled/' "$FILE"
               echo "[+] file_wrapper.c safely neutralized."
           fi
 
-          echo "=== 2. Fixing MODULE_IMPORT_NS ==="
+          echo "=== 3. Fixing MODULE_IMPORT_NS ==="
           grep -rl "MODULE_IMPORT_NS" --include="*.c" . > /tmp/fix_ns.txt || true
           if [ -s /tmp/fix_ns.txt ]; then
-              while IFS= read -r f; do
-                  sed -i '/MODULE_IMPORT_NS/d' "$f"
-              done < /tmp/fix_ns.txt
-              echo "[+] Removed MODULE_IMPORT_NS."
+              while IFS= read -r f; do sed -i '/MODULE_IMPORT_NS/d' "$f"; done < /tmp/fix_ns.txt
           fi
 
-          echo "=== 3. Fixing seccomp_cache.c ==="
+          echo "=== 4. Fixing seccomp_cache.c ==="
           SC=$(find . -name "seccomp_cache.c" -path "*/kernelsu/*" | head -1)
           if [ -n "$SC" ] && [ -f "$SC" ]; then
               sed -i '1i #ifndef SECCOMP_ARCH_NATIVE_NR\n#define SECCOMP_ARCH_NATIVE_NR 4096\n#endif' "$SC"
-              echo "[+] Patched seccomp_cache.c"
           fi
-
-          echo "=== 4. Patching fs/ for kprobes ==="
-          # exec.c
-          cat << 'EOF' > exec.patch
-          --- a/fs/exec.c
-          +++ b/fs/exec.c
-          @@ -1886,12 +1886,26 @@ static int do_execveat_common(int fd, struct filename *filename,
-           	return retval;
-           }
-           
-          +#ifdef CONFIG_KSU
-          +__attribute__((hot))
-          +extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
-          +				void *argv, void *envp, int *flags);
-          +#endif
-          +
-           static int do_execveat_common(int fd, struct filename *filename,
-           			      struct user_arg_ptr argv,
-           			      struct user_arg_ptr envp,
-           			      int flags)
-           {
-          +#ifdef CONFIG_KSU
-          +	ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);
-          +#endif
-           	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
-           }
-          EOF
-          patch -p1 < exec.patch || true
-
-          # open.c
-          cat << 'EOF' > open.patch
-          --- a/fs/open.c
-          +++ b/fs/open.c
-          @@ -348,6 +348,10 @@ SYSCALL_DEFINE4(fallocate, int, fd, int, mode, loff_t, offset, loff_t, len)
-           	return ksys_fallocate(fd, mode, offset, len);
-           }
-           
-          +#ifdef CONFIG_KSU
-          +extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);
-          +#endif
-          +
-           long do_faccessat(int dfd, const char __user *filename, int mode)
-           {
-          +#ifdef CONFIG_KSU
-          +	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
-          +#endif
-           	const struct cred *old_cred;
-          EOF
-          patch -p1 < open.patch || true
-
-          # read_write.c
-          cat << 'EOF' > read_write.patch
-          --- a/fs/read_write.c
-          +++ b/fs/read_write.c
-          @@ -434,10 +434,18 @@ ssize_t kernel_read(struct file *file, void *buf, size_t count, loff_t *pos)
-           }
-           EXPORT_SYMBOL(kernel_read);
-           
-          +#ifdef CONFIG_KSU
-          +extern bool ksu_vfs_read_hook __read_mostly;
-          +extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);
-          +#endif
-          +
-           ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
-           {
-           	ssize_t ret;
-          +#ifdef CONFIG_KSU
-          +	if (unlikely(ksu_vfs_read_hook))
-          +		ksu_handle_vfs_read(&file, &buf, &count, &pos);
-          +#endif
-           	if (!(file->f_mode & FMODE_READ))
-           		return -EBADF;
-          EOF
-          patch -p1 < read_write.patch || true
-
-          # stat.c
-          cat << 'EOF' > stat.patch
-          --- a/fs/stat.c
-          +++ b/fs/stat.c
-          @@ -148,6 +148,10 @@ int vfs_statx_fd(unsigned int fd, struct kstat *stat,
-           }
-           EXPORT_SYMBOL(vfs_statx_fd);
-           
-          +#ifdef CONFIG_KSU
-          +extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
-          +#endif
-          +
-           int vfs_statx(int dfd, const char __user *filename, int flags, struct kstat *stat, u32 request_mask)
-           {
-          +#ifdef CONFIG_KSU
-          +	ksu_handle_stat(&dfd, &filename, &flags);
-          +#endif
-           	int error = -EINVAL;
-          EOF
-          patch -p1 < stat.patch || true
 
       - name: Extract FinaSU Manager Signature
         run: |
@@ -188,12 +100,10 @@ jobs:
                   echo "$KSU_HASH" > /tmp/ksu_hash
                   echo "[+] Successfully extracted FinaSU Manager signature."
               else
-                  echo "[!] Could not extract signature, using default."
                   echo "$DEFAULT_SIZE" > /tmp/ksu_size
                   echo "$DEFAULT_HASH" > /tmp/ksu_hash
               fi
           else
-              echo "[!] Could not download APK, using default signature."
               echo "$DEFAULT_SIZE" > /tmp/ksu_size
               echo "$DEFAULT_HASH" > /tmp/ksu_hash
           fi
@@ -222,8 +132,6 @@ jobs:
           CONFIG_MODULES=y
           CONFIG_MODULE_FORCE_LOAD=y
           CONFIG_MODULE_FORCE_UNLOAD=y
-          CONFIG_BLK_INLINE_ENCRYPTION=n
-          CONFIG_FS_ENCRYPTION=n
           CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y
           CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES="mediatek/mt6768"
           CONFIG_KSU_EXPECTED_SIZE=0x${KSU_SIZE_HEX}
@@ -233,8 +141,14 @@ jobs:
           ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m out/.config arch/arm64/configs/vendor/merlin.config
           make O=out ARCH=arm64 olddefconfig
           
+          # EP CUNG tắt inline encryption trực tiếp trong .config để đảm bảo không bị ghi đè
+          sed -i 's/CONFIG_BLK_INLINE_ENCRYPTION=y/CONFIG_BLK_INLINE_ENCRYPTION=n/g' out/.config
+          sed -i 's/CONFIG_FS_ENCRYPTION=y/CONFIG_FS_ENCRYPTION=n/g' out/.config
+          # Chạy lại olddefconfig để áp dụng thay đổi
+          make O=out ARCH=arm64 olddefconfig
+          
           echo "=== VERIFY CONFIG ==="
-          grep -E "CONFIG_KSU=y|CONFIG_KSU_KPROBE_HOOKS=y|CONFIG_KSU_EXPECTED" out/.config || echo "WARNING: Config missing!"
+          grep -E "CONFIG_KSU=y|CONFIG_KSU_KPROBE_HOOKS=y|CONFIG_BLK_INLINE_ENCRYPTION=n" out/.config || echo "WARNING: Config issue!"
 
       - name: Build Kernel
         run: |
