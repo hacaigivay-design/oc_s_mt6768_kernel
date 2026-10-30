@@ -23,7 +23,7 @@ jobs:
         run: |
           set -e
 
-          # 1. init.c - bo MODULE_IMPORT_NS
+          # 1. init.c
           INIT_C="FinaSU/kernel/core/init.c"
           if [ -f "$INIT_C" ]; then
             perl -0777 -i -pe 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION\(6, 13, 0\)\s*\n\s*MODULE_IMPORT_NS\([^)]*\);\s*\n#else\s*\n\s*MODULE_IMPORT_NS\([^)]*\);\s*\n#endif/\/\* MODULE_IMPORT_NS removed for 4.19 \*\//gs' "$INIT_C" || true
@@ -59,7 +59,7 @@ jobs:
             echo "file_wrapper.c OK"
           fi
 
-          # 4. seccomp_cache.c - stub rong
+          # 4. seccomp_cache.c
           SC=$(find . -name "seccomp_cache.c" | head -1)
           if [ -n "$SC" ]; then
             cat > "$SC" << 'SCEOF'
@@ -81,7 +81,7 @@ jobs:
           done
           echo "mount.h OK"
 
-          # 6. pkg_observer.c - stub rong
+          # 6. pkg_observer.c
           PO=$(find . -name "pkg_observer.c" | head -1)
           if [ -n "$PO" ]; then
             cat > "$PO" << 'PKGEOF'
@@ -96,15 +96,10 @@ jobs:
             echo "pkg_observer.c OK"
           fi
 
-          # 7a. dynamic_manager.c - them version.h
+          # 7. dynamic_manager.c
           DM=$(find . -name "dynamic_manager.c" | head -1)
           if [ -n "$DM" ]; then
             grep -q "linux/version.h" "$DM" || sed -i '1i #include <linux/version.h>' "$DM" || true
-            echo "dynamic_manager.c: added version.h"
-          fi
-
-          # 7b. dynamic_manager.c - stub ksu_dynamic_manager_persist (KHONG dung \n trong string)
-          if [ -n "$DM" ]; then
             perl -0777 -i -pe '
               s{
                 void\s+ksu_dynamic_manager_persist\s*\(\s*void\s*\)\s*\{
@@ -136,6 +131,42 @@ jobs:
               }sx
             ' "$DM" || true
             echo "dynamic_manager.c OK"
+          fi
+
+          # 8. allowlist.c - stub ksu_persistent_allow_list
+          AL=$(find . -name "allowlist.c" | head -1)
+          if [ -n "$AL" ]; then
+            grep -q "linux/version.h" "$AL" || sed -i '1i #include <linux/version.h>' "$AL" || true
+            perl -0777 -i -pe '
+              s{
+                void\s+ksu_persistent_allow_list\s*\(\s*\)\s*\{
+                  .*?
+                \n\}
+              }{
+                #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+                void ksu_persistent_allow_list(void)
+                {
+                    struct task_struct *tsk;
+                    rcu_read_lock();
+                    tsk = get_pid_task(find_vpid(1), PIDTYPE_PID);
+                    if (!tsk) { rcu_read_unlock(); pr_err("save_allow_list find init task err"); return; }
+                    rcu_read_unlock();
+                    struct callback_head *cb = kzalloc(sizeof(struct callback_head), GFP_KERNEL);
+                    if (!cb) { pr_err("save_allow_list alloc cb err"); goto put_task; }
+                    cb->func = do_persistent_allow_list;
+                    if (task_work_add(tsk, cb, TWA_RESUME)) { kfree(cb); pr_warn("save_allow_list add task_work failed"); }
+                put_task:
+                    put_task_struct(tsk);
+                }
+                #else
+                void ksu_persistent_allow_list(void)
+                {
+                    pr_warn("allowlist: persist not supported on kernel < 5.10");
+                }
+                #endif
+              }sx
+            ' "$AL" || true
+            echo "allowlist.c OK"
           fi
 
       - name: Install dependencies + Clang 14 + GCC cross
