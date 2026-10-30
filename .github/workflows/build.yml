@@ -45,9 +45,9 @@ jobs:
 
       - name: Setup FinaSU & Apply Compatibility Patches
         run: |
-          echo "=== 1. Running FinaSU setup.sh (Using 'main' branch for stability on 4.19) ==="
-          # Ép sử dụng nhánh 'main' thay vì 'dev' mặc định để đảm bảo ổn định cho kernel 4.19
-          curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/main/kernel/setup.sh" | bash -s main
+          echo "=== 1. Running FinaSU setup.sh (Using 'master' branch) ==="
+          # SỬA LỖI: Đổi 'main' thành 'master' đúng với repository gốc
+          curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash -s master
           
           echo "=== 2. Fixing MODULE_IMPORT_NS for kernel < 5.10 ==="
           grep -rl "MODULE_IMPORT_NS" --include="*.c" . > /tmp/fix_ns.txt || true
@@ -79,7 +79,6 @@ jobs:
           echo "=== 5. Fixing seccomp_cache.c for older kernels ==="
           SC=$(find . -name "seccomp_cache.c" -path "*/kernelsu/*" | head -1)
           if [ -n "$SC" ] && [ -f "$SC" ]; then
-              # Thêm fallback define nếu kernel thiếu
               sed -i '1i #ifndef SECCOMP_ARCH_NATIVE_NR\n#define SECCOMP_ARCH_NATIVE_NR 4096\n#endif' "$SC"
               echo "[+] Patched seccomp_cache.c"
           fi
@@ -87,8 +86,6 @@ jobs:
           echo "=== 6. Safely disabling supercall.c advanced features for < 5.10 ==="
           SU=$(find . -name "supercall.c" -path "*supercall*" | head -1)
           if [ -n "$SU" ] && [ -f "$SU" ]; then
-              # Wrap toàn bộ file bằng #if 0 để tránh lỗi cú pháp task_work_add trên kernel cũ
-              # Tính năng này không ảnh hưởng đến root cơ bản
               sed -i '1i #if 0 /* Disabled for kernel < 5.10 compatibility */' "$SU"
               echo '#endif /* Disabled */' >> "$SU"
               echo "[+] Disabled supercall.c advanced features."
@@ -226,7 +223,6 @@ jobs:
           echo "=== Clang dang dung ==="
           clang --version | head -1
 
-          # QUAN TRỌNG: Bắt lỗi ngay lập tức nếu make fail
           set -eo pipefail
           
           echo "Starting kernel build with FinaSU..."
