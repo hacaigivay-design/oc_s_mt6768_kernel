@@ -45,57 +45,74 @@ jobs:
           curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash || true
 
       - name: Patch FinaSU for kernel 4.19
+        shell: bash
         run: |
           set +e
+          echo "=== Patch FinaSU for kernel 4.19 ==="
+
           INIT_C="FinaSU/kernel/core/init.c"
           [ -f "$INIT_C" ] && perl -0777 -i -pe 's/#if LINUX_VERSION_CODE >= KERNEL_VERSION\(6, 13, 0\)\s*\n\s*MODULE_IMPORT_NS\([^)]*\);\s*\n#else\s*\n\s*MODULE_IMPORT_NS\([^)]*\);\s*\n#endif/\/\* removed \*\//gs' "$INIT_C"
           [ -f "$INIT_C" ] && perl -i -ne 'print unless /MODULE_IMPORT_NS/' "$INIT_C"
+
           [ -f fs/dcache.c ] && (grep -q "linux/susfs.h" fs/dcache.c || sed -i '/#include <linux\/dcache.h>/a #ifdef CONFIG_KSU_SUSFS\n#include <linux\/susfs.h>\n#endif' fs/dcache.c)
           [ -f include/linux/fs.h ] && ! grep -q "INODE_STATE_SUS_PATH" include/linux/fs.h && sed -i '/^#endif \/\* _LINUX_FS_H \*\//i #ifdef CONFIG_KSU_SUSFS\n#ifndef INODE_STATE_SUS_PATH\n#define INODE_STATE_SUS_PATH (1 << 16)\n#endif\n#endif' include/linux/fs.h
           [ -f include/linux/sched.h ] && ! grep -q "TASK_STRUCT_NON_ROOT_USER_APP_PROC" include/linux/sched.h && sed -i '/^#endif \/\* _LINUX_SCHED_H \*\//i #ifdef CONFIG_KSU_SUSFS\n#ifndef TASK_STRUCT_NON_ROOT_USER_APP_PROC\n#define TASK_STRUCT_NON_ROOT_USER_APP_PROC (1 << 0)\n#endif\n#endif' include/linux/sched.h
+
           F=$(find . -name "file_wrapper.c" | head -1)
           [ -n "$F" ] && sed -i 's|^\(\s*\)p->ops\.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n\1p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;\n\1#endif|' "$F"
           [ -n "$F" ] && sed -i 's|^\(\s*\)p->ops\.remap_file_range = fp->f_op->remap_file_range ? ksu_wrapper_remap_file_range : NULL;|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\n\1p->ops.remap_file_range = fp->f_op->remap_file_range ? ksu_wrapper_remap_file_range : NULL;\n\1#endif|' "$F"
           [ -n "$F" ] && sed -i 's|^\(\s*\)return orig->f_op->iopoll(kiocb, spin);|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n\1return orig->f_op->iopoll(kiocb, spin);\n\1#else\n\1return -EOPNOTSUPP;\n\1#endif|' "$F"
           [ -n "$F" ] && awk 'BEGIN{in_func=0;depth=0} /static loff_t ksu_wrapper_remap_file_range\(/{in_func=1;print "#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)"} in_func{print;n=gsub(/\{/,"{");m=gsub(/\}/,"}");depth+=n-m;if(depth==0&&n+m>0){print "#endif";in_func=0};next}{print}' "$F" > "$F.tmp" && mv "$F.tmp" "$F"
+
           for f in $(grep -rl "linux/minmax.h" FinaSU/ 2>/dev/null); do sed -i 's|#include <linux/minmax.h>|#include <linux/kernel.h>|g' "$f"; done
+
           DI=$(find . -name "dispatch.c" -path "*supercall*" | head -1)
           [ -n "$DI" ] && sed -i '1i #include <linux/sched/signal.h>\n#include <linux/sched/task.h>\n#include <linux/init_task.h>' "$DI"
+
           SC=$(find . -name "seccomp_cache.c" | head -1)
           [ -n "$SC" ] && printf '%s\n' '#include <linux/version.h>' '#include "klog.h"' '#include "infra/seccomp_cache.h"' '#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)' 'void ksu_seccomp_clear_cache(struct seccomp_filter *filter, int nr) { (void)filter; (void)nr; }' 'void ksu_seccomp_allow_cache(struct seccomp_filter *filter, int nr) { (void)filter; (void)nr; }' '#endif' > "$SC"
+
           for f in $(grep -rl "uapi/linux/mount.h" FinaSU/ 2>/dev/null); do sed -i 's|#include <uapi/linux/mount.h>|#include <linux/mount.h>|g' "$f"; done
+
           PO=$(find . -name "pkg_observer.c" | head -1)
           [ -n "$PO" ] && printf '%s\n' '#include <linux/version.h>' '#include "klog.h"' '#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)' 'int ksu_observer_init(void) { pr_info("observer: not supported"); return 0; }' 'void ksu_observer_exit(void) { }' '#endif' > "$PO"
+
           DM=$(find . -name "dynamic_manager.c" | head -1)
           [ -n "$DM" ] && sed -i '1i #include <linux/version.h>' "$DM"
           [ -n "$DM" ] && perl -0777 -i -pe 's/void\s+ksu_dynamic_manager_persist\s*\(\s*void\s*\)\s*\{.*?\n\}/#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)\nvoid ksu_dynamic_manager_persist(void) { }\n#else\nvoid ksu_dynamic_manager_persist(void) { pr_warn("dynamic_manager: persist not supported"); }\n#endif/s' "$DM"
+
           AL=$(find . -name "allowlist.c" | head -1)
           [ -n "$AL" ] && sed -i '1i #include <linux/version.h>' "$AL"
           [ -n "$AL" ] && perl -0777 -i -pe 's/void\s+ksu_persistent_allow_list\s*\(\s*\)\s*\{.*?\n\}/#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)\nvoid ksu_persistent_allow_list(void) { }\n#else\nvoid ksu_persistent_allow_list(void) { pr_warn("allowlist: persist not supported"); }\n#endif/s' "$AL"
+
           AP=$(find . -name "app_profile.c" | head -1)
           [ -n "$AP" ] && sed -i '1i #include <linux/version.h>' "$AP"
           [ -n "$AP" ] && perl -0777 -i -pe 's/static\s+void\s+disable_seccomp\s*\(\s*void\s*\)\s*\{.*?\n\}/static void disable_seccomp(void) {\n#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)\n    spin_lock_irq(\&current->sighand->siglock);\n    clear_thread_flag(TIF_SECCOMP);\n    current->seccomp.mode = 0;\n    current->seccomp.filter = NULL;\n    spin_unlock_irq(\&current->sighand->siglock);\n#else\n    struct task_struct *fake = kmalloc(sizeof(*fake), GFP_KERNEL);\n    if (!fake) return;\n    spin_lock_irq(\&current->sighand->siglock);\n    clear_thread_flag(TIF_SECCOMP);\n    memcpy(fake, current, sizeof(*fake));\n    current->seccomp.mode = 0;\n    current->seccomp.filter = NULL;\n    atomic_set(\&current->seccomp.filter_count, 0);\n    spin_unlock_irq(\&current->sighand->siglock);\n    seccomp_filter_release(fake);\n    kfree(fake);\n#endif\n}/s' "$AP"
+
           RU=$(find . -name "rules.c" -path "*selinux*" | head -1)
           [ -n "$RU" ] && printf '%s\n' '#include <linux/version.h>' '#include <linux/types.h>' '#include <linux/uaccess.h>' '#include "klog.h"' '#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)' 'void apply_kernelsu_rules(void) { pr_info("rules: not supported"); }' 'int handle_sepolicy(void __user *u, u64 l) { (void)u; (void)l; return -EOPNOTSUPP; }' '#endif' > "$RU"
+
           SP=$(find . -name "sepolicy.c" -path "*selinux*" | head -1)
           [ -n "$SP" ] && printf '%s\n' '#include <linux/version.h>' '#include <linux/types.h>' '#include "klog.h"' '#include "sepolicy.h"' '#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)' 'bool ksu_type(struct policydb *d, const char *n, const char *a) { (void)d;(void)n;(void)a; return false; }' 'bool ksu_attribute(struct policydb *d, const char *n) { (void)d;(void)n; return false; }' 'bool ksu_permissive(struct policydb *d, const char *t) { (void)d;(void)t; return false; }' 'bool ksu_enforce(struct policydb *d, const char *t) { (void)d;(void)t; return false; }' 'bool ksu_typeattribute(struct policydb *d, const char *t, const char *a) { (void)d;(void)t;(void)a; return false; }' 'bool ksu_exists(struct policydb *d, const char *t) { (void)d;(void)t; return false; }' 'bool ksu_allow(struct policydb *d, const char *s, const char *t, const char *c, const char *p) { (void)d;(void)s;(void)t;(void)c;(void)p; return false; }' 'bool ksu_deny(struct policydb *d, const char *s, const char *t, const char *c, const char *p) { (void)d;(void)s;(void)t;(void)c;(void)p; return false; }' 'bool ksu_auditallow(struct policydb *d, const char *s, const char *t, const char *c, const char *p) { (void)d;(void)s;(void)t;(void)c;(void)p; return false; }' 'bool ksu_dontaudit(struct policydb *d, const char *s, const char *t, const char *c, const char *p) { (void)d;(void)s;(void)t;(void)c;(void)p; return false; }' 'bool ksu_allowxperm(struct policydb *d, const char *s, const char *t, const char *c, const char *r) { (void)d;(void)s;(void)t;(void)c;(void)r; return false; }' 'bool ksu_auditallowxperm(struct policydb *d, const char *s, const char *t, const char *c, const char *r) { (void)d;(void)s;(void)t;(void)c;(void)r; return false; }' 'bool ksu_dontauditxperm(struct policydb *d, const char *s, const char *t, const char *c, const char *r) { (void)d;(void)s;(void)t;(void)c;(void)r; return false; }' 'bool ksu_type_transition(struct policydb *d, const char *s, const char *t, const char *c, const char *def, const char *o) { (void)d;(void)s;(void)t;(void)c;(void)def;(void)o; return false; }' 'bool ksu_type_change(struct policydb *d, const char *s, const char *t, const char *c, const char *def) { (void)d;(void)s;(void)t;(void)c;(void)def; return false; }' 'bool ksu_type_member(struct policydb *d, const char *s, const char *t, const char *c, const char *def) { (void)d;(void)s;(void)t;(void)c;(void)def; return false; }' 'bool ksu_genfscon(struct policydb *d, const char *f, const char *p, const char *c) { (void)d;(void)f;(void)p;(void)c; return false; }' 'void ksu_destroy_sepolicy(struct selinux_policy *p) { (void)p; }' 'struct selinux_policy *ksu_dup_sepolicy(struct selinux_policy *p) { (void)p; return ERR_PTR(-EOPNOTSUPP); }' '#endif' > "$SP"
 
-          # ============ FIX: supercall.c ============
-          # Thay 2 lenh sed cu (gay loi "#else without #if") bang Python block-replace
+          # ============================================================
+          # FIX supercall.c: viet script Python ra file tam de tranh
+          # loi heredoc long trong YAML
+          # ============================================================
           SU=$(find . -name "supercall.c" -path "*supercall*" | head -1)
           if [ -n "$SU" ]; then
+            echo "Found supercall.c: $SU"
             grep -q '#include <linux/version.h>' "$SU" || sed -i '1i #include <linux/version.h>' "$SU"
-            python3 - "$SU" <<'PY'
+
+            cat > /tmp/patch_supercall.py <<'PYEOF'
 import re, sys
 p = sys.argv[1]
 s = open(p).read()
 
-# Idempotent: neu da patch roi thi thoi
 if "ksu_install_fd_tw_func(&tw->cb);" in s and "#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)" in s:
     print("supercall.c: already patched, skip")
     sys.exit(0)
 
-# Tim block: if (task_work_add(current, &tw->cb, TWA_RESUME)) { ... }
 pat = re.compile(
     r'(?P<pre>if\s*\(\s*task_work_add\s*\(\s*current\s*,\s*&\s*tw->cb\s*,\s*TWA_RESUME\s*\)\s*\)\s*\{)'
     r'(?P<body>.*?)'
@@ -115,12 +132,21 @@ def repl(m):
 new, n = pat.subn(repl, s, count=1)
 if n == 0:
     print("WARN: task_work_add block NOT found in", p)
-else:
-    open(p, "w").write(new)
-    print("supercall.c: patched OK")
-PY
+    print("--- context around task_work_add ---")
+    idx = s.find("task_work_add")
+    if idx >= 0:
+        print(s[max(0,idx-200):idx+400])
+    sys.exit(0)
+
+open(p, "w").write(new)
+print("supercall.c: patched OK")
+PYEOF
+
+            python3 /tmp/patch_supercall.py "$SU"
+          else
+            echo "WARN: supercall.c not found, skip"
           fi
-          # ============ END FIX ============
+          # ============================================================
 
           echo "PATCH DONE"
 
@@ -142,7 +168,6 @@ PY
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
 
-          # Buoc defconfig dung GCC cross de test compiler
           make O=out ARCH=arm64 vendor/mt6768_defconfig
 
           echo "=== Merge merlin.config ==="
