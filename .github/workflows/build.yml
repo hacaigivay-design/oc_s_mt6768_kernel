@@ -46,7 +46,6 @@ jobs:
       - name: Setup FinaSU & Apply Compatibility Patches
         run: |
           echo "=== 1. Running FinaSU setup.sh (Using 'master' branch) ==="
-          # SỬA LỖI: Đổi 'main' thành 'master' đúng với repository gốc
           curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash -s master
           
           echo "=== 2. Fixing MODULE_IMPORT_NS for kernel < 5.10 ==="
@@ -67,13 +66,15 @@ jobs:
           fi
           echo "[+] Patched crypto headers."
 
-          echo "=== 4. Fixing file_wrapper.c for older kernels ==="
+          echo "=== 4. Fixing file_wrapper.c for older kernels (Simple sed approach) ==="
           F=$(find . -name "file_wrapper.c" -path "*/kernelsu/*" | head -1)
           if [ -n "$F" ] && [ -f "$F" ]; then
-              perl -0777 -i -pe 's/(\s+)p->ops\.iopoll = fp->f_op->iopoll \? ksu_wrapper_iopoll : NULL;/$1#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n$1p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;\n$1#endif/s' "$F"
-              perl -0777 -i -pe 's/(\s+)p->ops\.remap_file_range = fp->f_op->remap_file_range \? ksu_wrapper_remap_file_range : NULL;/$1#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)\n$1p->ops.remap_file_range = fp->f_op->remap_file_range ? ksu_wrapper_remap_file_range : NULL;\n$1#endif/s' "$F"
-              perl -0777 -i -pe 's/(\s+)return orig->f_op->iopoll\(kiocb, spin\);/$1#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n$1return orig->f_op->iopoll(kiocb, spin);\n$1#else\n$1return -EOPNOTSUPP;\n$1#endif/s' "$F"
-              echo "[+] Patched file_wrapper.c"
+              echo "[+] Found file_wrapper.c at: $F"
+              # XÓA HOÀN TOÀN các dòng chứa iopoll, remap_file_range, REMAP_FILE_DEDUP
+              sed -i '/iopoll/d' "$F"
+              sed -i '/remap_file_range/d' "$F"
+              sed -i '/REMAP_FILE_DEDUP/d' "$F"
+              echo "[+] Removed all incompatible lines from file_wrapper.c"
           fi
 
           echo "=== 5. Fixing seccomp_cache.c for older kernels ==="
