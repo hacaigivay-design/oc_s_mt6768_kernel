@@ -103,7 +103,6 @@ jobs:
             exit 0
           fi
           echo "Patching: $SC"
-
           cat > "$SC" << 'SCEOF'
           // SPDX-License-Identifier: GPL-2.0
           /* Stub for kernel 4.19 - seccomp cache infrastructure not available */
@@ -125,31 +124,65 @@ jobs:
           }
           #endif
           SCEOF
-
           echo "=== Verify ==="
           grep -n "SECCOMP_ARCH_NATIVE_NR\|ksu_seccomp" "$SC" | head -20
 
       - name: Patch mount.h include for kernel 4.19
         run: |
           set -e
-          echo "=== Tim file dung uapi/linux/mount.h ==="
-          grep -rl "uapi/linux/mount.h" FinaSU/ 2>/dev/null || echo "(khong thay)"
           FOUND=0
           for f in $(grep -rl "uapi/linux/mount.h" FinaSU/ 2>/dev/null); do
             FOUND=1
             echo "Patching: $f"
             sed -i 's|#include <uapi/linux/mount.h>|#include <linux/mount.h>|g' "$f" || true
-            echo "=== Verify $f ==="
-            grep -n "uapi/linux/mount.h\|linux/mount.h" "$f" | head -5
           done
           if [ "$FOUND" = "0" ]; then
-            echo "CANH BAO: khong tim thay file nao dung uapi/linux/mount.h"
-            SM=$(find FinaSU -name "su_mount_ns.c" 2>/dev/null | head -1)
-            if [ -n "$SM" ]; then
-              echo "=== Kiem tra $SM ==="
-              sed -n '1,25p' "$SM"
-            fi
+            echo "(khong co file nao dung uapi/linux/mount.h)"
           fi
+
+      - name: Patch pkg_observer.c for kernel 4.19
+        run: |
+          set -e
+          PO=$(find . -name "pkg_observer.c" | head -1)
+          if [ -z "$PO" ]; then
+            echo "KHONG TIM THAY pkg_observer.c"
+            exit 0
+          fi
+          echo "Patching: $PO"
+          echo "=== Noi dung goc (30 dong dau) ==="
+          sed -n '1,30p' "$PO"
+
+          cat > "$PO" << 'PKGEOF'
+          // SPDX-License-Identifier: GPL-2.0
+          /* Stub for kernel 4.19 - fsnotify API not available */
+          #include <linux/version.h>
+          #include <linux/fsnotify_backend.h>
+          #include "klog.h"
+          #include "manager/pkg_observer.h"
+
+          #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
+          int ksu_pkg_observer_init(void)
+          {
+              pr_info("pkg_observer: not supported on kernel < 5.9\n");
+              return 0;
+          }
+
+          void ksu_pkg_observer_exit(void)
+          {
+          }
+
+          void ksu_pkg_observer_start(void)
+          {
+          }
+
+          void ksu_pkg_observer_stop(void)
+          {
+          }
+          #endif
+          PKGEOF
+
+          echo "=== Verify ==="
+          grep -n "TWA_RESUME\|handle_inode_event\|ksu_pkg_observer" "$PO" | head -20
 
       - name: Install dependencies + Clang 14 + GCC cross
         run: |
