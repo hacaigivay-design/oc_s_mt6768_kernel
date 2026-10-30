@@ -45,10 +45,20 @@ jobs:
 
       - name: Setup KernelSU & Apply Manual Patches (Non-GKI)
         run: |
-          echo "=== 1. Running KernelSU setup.sh ==="
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+          echo "=== 1. Running KernelSU setup.sh (v0.9.5 for stable non-GKI) ==="
+          # Sử dụng v0.9.5 vì đây là phiên bản cuối cùng hỗ trợ non-GKI ổn định trước khi bị thay đổi macro
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
           
-          echo "=== 2. Applying manual patches to fs/ ==="
+          echo "=== 2. Fixing MODULE_IMPORT_NS compilation error for older kernels ==="
+          # Tự động comment dòng gây lỗi trên các kernel < 5.10
+          find . -path "*/kernelsu/*" -name "*.c" -exec sed -i 's/MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);/\/\/ MODULE_IMPORT_NS disabled for non-GKI/' {} \;
+          
+          echo "=== 3. Disabling enable_sucompat() in KernelSU ==="
+          # Dùng find để đảm bảo tìm đúng file ksu.c bất kể nó nằm ở KernelSU/kernel/ hay drivers/kernelsu/core/
+          find . -path "*/kernelsu/*" -name "ksu.c" -exec sed -i 's/enable_sucompat();/\/\/ enable_sucompat();/' {} \;
+          find . -path "*/KernelSU/*" -name "ksu.c" -exec sed -i 's/enable_sucompat();/\/\/ enable_sucompat();/' {} \;
+
+          echo "=== 4. Applying manual patches to fs/ ==="
           # Patch fs/exec.c
           cat << 'EOF' > exec.patch
           --- a/fs/exec.c
@@ -74,7 +84,7 @@ jobs:
            	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
            }
           EOF
-          patch -p1 < exec.patch || echo "[WARNING] exec.c patch failed, line numbers may differ in your source"
+          patch -p1 < exec.patch || echo "[WARNING] exec.c patch failed, line numbers may differ"
 
           # Patch fs/open.c
           cat << 'EOF' > open.patch
@@ -194,9 +204,6 @@ jobs:
           EOF
           patch -p1 < namespace.patch || echo "[WARNING] namespace.c patch failed"
 
-          echo "=== 3. Disabling enable_sucompat() in KernelSU ==="
-          sed -i 's/enable_sucompat()/\/\/ enable_sucompat()/' KernelSU/kernel/ksu.c || echo "[WARNING] Could not find enable_sucompat to disable"
-
       - name: Configure kernel with Kprobes & KernelSU
         run: |
           export ARCH=arm64
@@ -212,10 +219,8 @@ jobs:
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
 
-          # Buoc defconfig dung GCC cross de test compiler
           make O=out ARCH=arm64 vendor/mt6768_defconfig
 
-          # Them cac cau hinh bat buoc cho Kprobes va Modules (theo huong dan KernelSU)
           echo "=== Injecting KernelSU & Kprobe configs ==="
           cat << 'EOF' >> arch/arm64/configs/vendor/merlin.config
           CONFIG_KPROBES=y
