@@ -49,7 +49,6 @@ jobs:
           curl -LSs "https://raw.githubusercontent.com/LyraVoid/FinaSU/master/kernel/setup.sh" | bash
 
           echo "=== 2. Fixing MODULE_IMPORT_NS (Bulletproof - grep based) ==="
-          # Tìm TẤT CẢ file .c chứa MODULE_IMPORT_NS trong toàn bộ source, bất kể symlink
           echo "[+] Searching for MODULE_IMPORT_NS in all .c files..."
           grep -rl "MODULE_IMPORT_NS" --include="*.c" . > /tmp/files_to_fix.txt || true
           
@@ -80,22 +79,27 @@ jobs:
           fi
 
           echo ""
-          echo "=== 4. Fixing file_wrapper.c for older kernels ==="
-          # Tìm file thực tế (có thể qua symlink)
+          echo "=== 4. Fixing file_wrapper.c for older kernels (Complete fix) ==="
           FILE_WRAPPER=$(find . -name "file_wrapper.c" -path "*/kernelsu/*" 2>/dev/null | head -1)
           if [ -z "$FILE_WRAPPER" ]; then
-              # Fallback: tìm trong FinaSU gốc
               FILE_WRAPPER=$(find . -name "file_wrapper.c" -path "*/FinaSU/*" 2>/dev/null | head -1)
           fi
           
           if [ -n "$FILE_WRAPPER" ] && [ -f "$FILE_WRAPPER" ]; then
               echo "[+] Found file_wrapper.c at: $FILE_WRAPPER"
+              
+              # Fix thân hàm: thay return statements bằng stub
               sed -i 's|return orig->f_op->iopoll(kiocb, spin);|return -EOPNOTSUPP; /* iopoll stub */|' "$FILE_WRAPPER"
               sed -i 's|if (remap_flags & REMAP_FILE_DEDUP) {|if (0) { /* REMAP_FILE_DEDUP stub */|' "$FILE_WRAPPER"
               sed -i 's|return orig->f_op->remap_file_range(file_in, pos_in, orig, pos_out, len, remap_flags);|return -EOPNOTSUPP; /* remap stub */|' "$FILE_WRAPPER"
               sed -i 's|return orig->f_op->remap_file_range(orig, pos_in, file_out, pos_out, len, remap_flags);|return -EOPNOTSUPP; /* remap stub */|' "$FILE_WRAPPER"
-              sed -i 's|p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;|p->ops.iopoll = NULL; /* iopoll stub */|' "$FILE_WRAPPER"
-              echo "[+] Successfully patched file_wrapper.c"
+              
+              # Fix struct assignment: XÓA HOÀN TOÀN các dòng gán p->ops.iopoll và p->ops.remap_file_range
+              sed -i '/p->ops\.iopoll/d' "$FILE_WRAPPER"
+              sed -i '/p->ops\.remap_file_range/d' "$FILE_WRAPPER"
+              
+              echo "[+] Successfully patched file_wrapper.c for kernel 4.14 compatibility"
+              echo "[+] Removed all iopoll and remap_file_range references"
           else
               echo "[!] file_wrapper.c not found, skipping"
           fi
