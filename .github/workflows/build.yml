@@ -218,33 +218,55 @@ jobs:
             echo "app_profile.c OK"
           fi
 
-          # 10. rules.c - stub, KHONG include header noi bo
+          # 10. rules.c - stub
           RU=$(find . -name "rules.c" -path "*selinux*" | head -1)
           if [ -n "$RU" ]; then
             cat > "$RU" << 'RULEOF'
           // SPDX-License-Identifier: GPL-2.0
-          /* Stub for kernel 4.19 - selinux_policy API not available (requires 5.7+) */
           #include <linux/version.h>
           #include <linux/types.h>
           #include <linux/uaccess.h>
           #include "klog.h"
-
           #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)
-          void apply_kernelsu_rules(void)
-          {
-              pr_info("KernelSU: SELinux rules injection not supported on kernel < 5.7");
-          }
-
-          int handle_sepolicy(void __user *user_data, u64 data_len)
-          {
-              (void)user_data;
-              (void)data_len;
-              pr_warn("KernelSU: handle_sepolicy not supported on kernel < 5.7");
-              return -EOPNOTSUPP;
-          }
+          void apply_kernelsu_rules(void) { pr_info("KernelSU: SELinux rules injection not supported on kernel < 5.7"); }
+          int handle_sepolicy(void __user *user_data, u64 data_len) { (void)user_data; (void)data_len; return -EOPNOTSUPP; }
           #endif
           RULEOF
             echo "rules.c OK (stubbed)"
+          fi
+
+          # 11. sepolicy.c - stub toan bo
+          SP=$(find . -name "sepolicy.c" -path "*selinux*" | head -1)
+          if [ -n "$SP" ]; then
+            cat > "$SP" << 'SPEOF'
+          // SPDX-License-Identifier: GPL-2.0
+          #include <linux/version.h>
+          #include <linux/types.h>
+          #include "klog.h"
+          #include "sepolicy.h"
+          #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)
+          bool ksu_type(struct policydb *db, const char *name, const char *attr) { (void)db; (void)name; (void)attr; return false; }
+          bool ksu_attribute(struct policydb *db, const char *name) { (void)db; (void)name; return false; }
+          bool ksu_permissive(struct policydb *db, const char *type) { (void)db; (void)type; return false; }
+          bool ksu_enforce(struct policydb *db, const char *type) { (void)db; (void)type; return false; }
+          bool ksu_typeattribute(struct policydb *db, const char *type, const char *attr) { (void)db; (void)type; (void)attr; return false; }
+          bool ksu_exists(struct policydb *db, const char *type) { (void)db; (void)type; return false; }
+          bool ksu_allow(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *perm) { (void)db; (void)src; (void)tgt; (void)cls; (void)perm; return false; }
+          bool ksu_deny(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *perm) { (void)db; (void)src; (void)tgt; (void)cls; (void)perm; return false; }
+          bool ksu_auditallow(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *perm) { (void)db; (void)src; (void)tgt; (void)cls; (void)perm; return false; }
+          bool ksu_dontaudit(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *perm) { (void)db; (void)src; (void)tgt; (void)cls; (void)perm; return false; }
+          bool ksu_allowxperm(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *range) { (void)db; (void)src; (void)tgt; (void)cls; (void)range; return false; }
+          bool ksu_auditallowxperm(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *range) { (void)db; (void)src; (void)tgt; (void)cls; (void)range; return false; }
+          bool ksu_dontauditxperm(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *range) { (void)db; (void)src; (void)tgt; (void)cls; (void)range; return false; }
+          bool ksu_type_transition(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *def, const char *obj) { (void)db; (void)src; (void)tgt; (void)cls; (void)def; (void)obj; return false; }
+          bool ksu_type_change(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *def) { (void)db; (void)src; (void)tgt; (void)cls; (void)def; return false; }
+          bool ksu_type_member(struct policydb *db, const char *src, const char *tgt, const char *cls, const char *def) { (void)db; (void)src; (void)tgt; (void)cls; (void)def; return false; }
+          bool ksu_genfscon(struct policydb *db, const char *fs_name, const char *path, const char *ctx) { (void)db; (void)fs_name; (void)path; (void)ctx; return false; }
+          void ksu_destroy_sepolicy(struct selinux_policy *pol) { (void)pol; }
+          struct selinux_policy *ksu_dup_sepolicy(struct selinux_policy *old_pol) { (void)old_pol; return ERR_PTR(-EOPNOTSUPP); }
+          #endif
+          SPEOF
+            echo "sepolicy.c OK (stubbed)"
           fi
 
       - name: Install dependencies + Clang 14 + GCC cross
