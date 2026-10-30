@@ -42,13 +42,12 @@ jobs:
       - name: Setup KernelSU-Next
         run: |
           echo "=== Running KernelSU-Next setup.sh (dev branch) ==="
-          # Sử dụng đường link CHÍNH XÁC bạn đã cung cấp
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash -s dev
           echo "[+] KernelSU-Next setup completed."
 
       - name: Apply Compatibility Patches for Kernel 4.19
         run: |
-          set +e # Cho phép bỏ qua nếu không tìm thấy file
+          set +e # Cho phép tiếp tục ngay cả khi một lệnh patch không tìm thấy file
 
           echo "=== 1. Fixing MODULE_IMPORT_NS ==="
           grep -rl "MODULE_IMPORT_NS" --include="*.c" . > /tmp/fix_ns.txt || true
@@ -59,27 +58,30 @@ jobs:
               echo "[+] Removed MODULE_IMPORT_NS."
           fi
 
-          echo "=== 2. Fixing blk-crypto headers ==="
-          [ -f include/linux/keyslot-manager.h ] && sed -i 's/always_inline inline/inline/g' include/linux/keyslot-manager.h
-          [ -f include/linux/blk-crypto.h ] && sed -i 's/always_inline inline/inline/g' include/linux/blk-crypto.h
-
-          echo "=== 3. Fixing file_wrapper.c ==="
-          F=$(find . -name "file_wrapper.c" -path "*/kernelsu/*" | head -1)
-          if [ -n "$F" ]; then
-              sed -i '/iopoll/d' "$F"
-              sed -i '/remap_file_range/d' "$F"
-              sed -i '/REMAP_FILE_DEDUP/d' "$F"
-              echo "[+] Cleaned file_wrapper.c"
+          echo "=== 2. Fixing blk-crypto headers (Aggressive) ==="
+          if [ -f include/linux/keyslot-manager.h ]; then
+              sed -i 's/__always_inline//g' include/linux/keyslot-manager.h
+              sed -i 's/always_inline//g' include/linux/keyslot-manager.h
+              echo "[+] Patched keyslot-manager.h"
           fi
+          if [ -f include/linux/blk-crypto.h ]; then
+              sed -i 's/__always_inline//g' include/linux/blk-crypto.h
+              sed -i 's/always_inline//g' include/linux/blk-crypto.h
+              echo "[+] Patched blk-crypto.h"
+          fi
+
+          echo "=== 3. Fixing file_wrapper.c (Global search & destroy) ==="
+          # Tìm TẤT CẢ file tên là file_wrapper.c và xóa các dòng gây lỗi, bất kể nằm ở đâu
+          find . -name "file_wrapper.c" -exec sed -i '/iopoll/d' {} \;
+          find . -name "file_wrapper.c" -exec sed -i '/remap_file_range/d' {} \;
+          find . -name "file_wrapper.c" -exec sed -i '/REMAP_FILE_DEDUP/d' {} \;
+          echo "[+] Cleaned all file_wrapper.c files globally."
 
           echo "=== 4. Fixing seccomp_cache.c ==="
-          SC=$(find . -name "seccomp_cache.c" -path "*/kernelsu/*" | head -1)
-          if [ -n "$SC" ]; then
-              sed -i '1i #ifndef SECCOMP_ARCH_NATIVE_NR\n#define SECCOMP_ARCH_NATIVE_NR 4096\n#endif' "$SC"
-          fi
+          find . -name "seccomp_cache.c" -exec sed -i '1i #ifndef SECCOMP_ARCH_NATIVE_NR\n#define SECCOMP_ARCH_NATIVE_NR 4096\n#endif' {} \;
+          echo "[+] Patched seccomp_cache.c"
 
           echo "=== 5. Patching fs/ for kprobes ==="
-          
           # exec.c
           cat << 'EOF' > exec.patch
           --- a/fs/exec.c
