@@ -69,37 +69,30 @@ jobs:
           sed -i 's|^\(\s*\)return orig->f_op->iopoll(kiocb, spin);|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)\n\1return orig->f_op->iopoll(kiocb, spin);\n\1#else\n\1return -EOPNOTSUPP;\n\1#endif|' "$F" || true
           sed -i 's|^\(\s*\)return orig->f_op->iopoll(kiocb, icb, v);|\1#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)\n\1return orig->f_op->iopoll(kiocb, icb, v);\n\1#else\n\1return -EOPNOTSUPP;\n\1#endif|' "$F" || true
 
-          perl -0777 -i -pe '
-            s{
-              static\s+loff_t\s+ksu_wrapper_remap_file_range\s*\([^)]*\)\s*\{
-                .*?
-              \}
-            }{
-              #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)
-              static loff_t ksu_wrapper_remap_file_range(struct file *file_in, loff_t pos_in, struct file *file_out, loff_t pos_out, loff_t len, unsigned int remap_flags)
-              {
-                  if (remap_flags & REMAP_FILE_DEDUP) {
-                      struct ksu_file_wrapper *data = file_out->private_data;
-                      struct file *orig = data->orig;
-                      return orig->f_op->remap_file_range(file_in, pos_in, orig, pos_out, len, remap_flags);
-                  } else {
-                      struct ksu_file_wrapper *data = file_in->private_data;
-                      struct file *orig = data->orig;
-                      return orig->f_op->remap_file_range(orig, pos_in, file_out, pos_out, len, remap_flags);
-                  }
+          awk '
+          BEGIN { in_func = 0; depth = 0 }
+          /static loff_t ksu_wrapper_remap_file_range\(/ {
+              in_func = 1
+              print "#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)"
+          }
+          in_func {
+              print
+              n = gsub(/\{/, "{")
+              m = gsub(/\}/, "}")
+              depth += n - m
+              if (depth == 0 && n+m > 0) {
+                  print "#endif"
+                  in_func = 0
               }
-              #else
-              static loff_t ksu_wrapper_remap_file_range(struct file *file_in, loff_t pos_in, struct file *file_out, loff_t pos_out, loff_t len, unsigned int remap_flags)
-              {
-                  (void)file_in; (void)pos_in; (void)file_out; (void)pos_out; (void)len; (void)remap_flags;
-                  return -EOPNOTSUPP;
-              }
-              #endif
-            }sx
-          ' "$F" || true
+              next
+          }
+          { print }
+          ' "$F" > "$F.tmp" && mv "$F.tmp" "$F"
 
           echo "=== Verify ==="
           grep -n "iopoll\|remap_file_range\|REMAP_FILE_DEDUP" "$F" | head -40
+          echo "=== Kiem tra cu phap ==="
+          awk '/#if LINUX_VERSION_CODE >= KERNEL_VERSION\(4, 20, 0\)/{c++} /#endif/{e++} END{print "so #if:", c, "so #endif:", e}' "$F"
 
       - name: Patch seccomp_cache.c for kernel 4.19
         run: |
@@ -141,7 +134,6 @@ jobs:
           set -e
           echo "=== Tim file dung uapi/linux/mount.h ==="
           grep -rl "uapi/linux/mount.h" FinaSU/ 2>/dev/null || echo "(khong thay)"
-          
           FOUND=0
           for f in $(grep -rl "uapi/linux/mount.h" FinaSU/ 2>/dev/null); do
             FOUND=1
@@ -150,7 +142,6 @@ jobs:
             echo "=== Verify $f ==="
             grep -n "uapi/linux/mount.h\|linux/mount.h" "$f" | head -5
           done
-          
           if [ "$FOUND" = "0" ]; then
             echo "CANH BAO: khong tim thay file nao dung uapi/linux/mount.h"
             SM=$(find FinaSU -name "su_mount_ns.c" 2>/dev/null | head -1)
