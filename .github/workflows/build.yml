@@ -55,6 +55,10 @@ jobs:
           mkdir -p drivers/kernelsu
           cp -r FinaSU_Source/kernel/* drivers/kernelsu/ 2>/dev/null || true
           
+          # COPY THÊM THƯ MỤC UAPI ĐỂ FIX LỖI THIẾU HEADER
+          mkdir -p drivers/kernelsu/uapi
+          cp -r FinaSU_Source/uapi/* drivers/kernelsu/uapi/ 2>/dev/null || true
+          
           # Thêm vào Makefile của drivers
           if ! grep -q "kernelsu" drivers/Makefile; then
             echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
@@ -157,10 +161,8 @@ jobs:
           cp out/arch/arm64/boot/Image.gz AnyKernel3/ 2>/dev/null || \
           cp out/arch/arm64/boot/Image AnyKernel3/
           
-          # Xóa các file thừa của AnyKernel3 mẫu
           rm -rf AnyKernel3/.git AnyKernel3/README.md
           
-          # Sửa file anykernel.sh để nhận diện đúng thiết bị (tuỳ chọn)
           sed -i 's/device.name1=.*/device.name1=merlin/' AnyKernel3/anykernel.sh
           sed -i 's/device.name2=.*/device.name2=merlin/' AnyKernel3/anykernel.sh
           
