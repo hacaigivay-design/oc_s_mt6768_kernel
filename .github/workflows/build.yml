@@ -33,17 +33,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential bc bison flex libssl-dev libelf-dev \
-            python3 python3-pip zip unzip git curl wget perl \
-            device-tree-compiler lz4 xz-utils zstd cpio rsync \
-            pahole kmod libc6-dev-i386 \
-            clang-14 lld-14 llvm-14 \
-            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabi g++-arm-linux-gnueabi \
-            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
-            openssl ccache
-
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev python3 python3-pip zip unzip git curl wget perl device-tree-compiler lz4 xz-utils zstd cpio rsync pahole kmod libc6-dev-i386 clang-14 lld-14 llvm-14 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-arm-linux-gnueabi g++-arm-linux-gnueabi binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi openssl ccache
           sudo ln -sf /usr/bin/clang-14 /usr/local/bin/clang
           sudo ln -sf /usr/bin/ld.lld-14 /usr/local/bin/ld.lld
           sudo ln -sf /usr/bin/llvm-ar-14 /usr/local/bin/llvm-ar
@@ -57,134 +47,88 @@ jobs:
 
       - name: Setup KernelSU-Next (Legacy Mode)
         run: |
-          echo "=== Running KernelSU-Next setup.sh (legacy branch for non-GKI) ==="
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
-          echo "[+] KernelSU-Next legacy setup completed."
 
-      - name: Apply Bulletproof Compatibility Patches
+      - name: Apply Compatibility Patches
         run: |
           set +e
-
-          echo "=== 1. Bulletproof fix for blk-crypto inline errors ==="
-          if [ -f include/linux/keyslot-manager.h ]; then
-              sed -i 's/__always_inline inline void ksm_flock/void ksm_flock/g' include/linux/keyslot-manager.h
-              sed -i 's/inline void ksm_flock/void ksm_flock/g' include/linux/keyslot-manager.h
-              sed -i 's/__always_inline void ksm_flock/void ksm_flock/g' include/linux/keyslot-manager.h
-              echo "[+] Patched keyslot-manager.h"
-          fi
-          if [ -f include/linux/blk-crypto.h ]; then
-              sed -i 's/__always_inline inline void blk_crypto_flock/void blk_crypto_flock/g' include/linux/blk-crypto.h
-              sed -i 's/inline void blk_crypto_flock/void blk_crypto_flock/g' include/linux/blk-crypto.h
-              sed -i 's/__always_inline void blk_crypto_flock/void blk_crypto_flock/g' include/linux/blk-crypto.h
-              echo "[+] Patched blk-crypto.h"
-          fi
-
-          echo "=== 2. Neutralizing file_wrapper.c safely ==="
+          # Fix blk-crypto
+          [ -f include/linux/keyslot-manager.h ] && sed -i 's/__always_inline inline void ksm_flock/void ksm_flock/g; s/inline void ksm_flock/void ksm_flock/g; s/__always_inline void ksm_flock/void ksm_flock/g' include/linux/keyslot-manager.h
+          [ -f include/linux/blk-crypto.h ] && sed -i 's/__always_inline inline void blk_crypto_flock/void blk_crypto_flock/g; s/inline void blk_crypto_flock/void blk_crypto_flock/g; s/__always_inline void blk_crypto_flock/void blk_crypto_flock/g' include/linux/blk-crypto.h
+          # Fix file_wrapper.c
           FILE=$(find . -name "file_wrapper.c" -path "*/kernelsu/*" | head -1)
           if [ -n "$FILE" ] && [ -f "$FILE" ]; then
-              perl -i -0777 -pe 's/(int ksu_wrapper_iopoll\s*\([^)]*\)\s*\{).*?(\n\})/$1\n    return -EOPNOTSUPP;\n$2/s' "$FILE"
-              perl -i -0777 -pe 's/(loff_t ksu_wrapper_remap_file_range\s*\([^)]*\)\s*\{).*?(\n\})/$1\n    return -EOPNOTSUPP;\n$2/s' "$FILE"
-              perl -i -pe 's/^(\s*)p->ops\.iopoll = .*/$1\/\/ p->ops.iopoll disabled/' "$FILE"
-              perl -i -pe 's/^(\s*)p->ops\.remap_file_range = .*/$1\/\/ p->ops.remap_file_range disabled/' "$FILE"
-              echo "[+] file_wrapper.c safely neutralized."
+            perl -i -0777 -pe 's/(int ksu_wrapper_iopoll\s*\([^)]*\)\s*\{).*?(\n\})/$1\n    return -EOPNOTSUPP;\n$2/s' "$FILE"
+            perl -i -0777 -pe 's/(loff_t ksu_wrapper_remap_file_range\s*\([^)]*\)\s*\{).*?(\n\})/$1\n    return -EOPNOTSUPP;\n$2/s' "$FILE"
+            perl -i -pe 's/^(\s*)p->ops\.iopoll = .*/$1\/\/ p->ops.iopoll disabled/' "$FILE"
+            perl -i -pe 's/^(\s*)p->ops\.remap_file_range = .*/$1\/\/ p->ops.remap_file_range disabled/' "$FILE"
           fi
-
-          echo "=== 3. Fixing MODULE_IMPORT_NS ==="
-          grep -rl "MODULE_IMPORT_NS" --include="*.c" . > /tmp/fix_ns.txt || true
-          if [ -s /tmp/fix_ns.txt ]; then
-              while IFS= read -r f; do sed -i '/MODULE_IMPORT_NS/d' "$f"; done < /tmp/fix_ns.txt
-          fi
-
-          echo "=== 4. Fixing seccomp_cache.c ==="
+          # Fix MODULE_IMPORT_NS
+          grep -rl "MODULE_IMPORT_NS" --include="*.c" . 2>/dev/null | xargs -r sed -i '/MODULE_IMPORT_NS/d'
+          # Fix seccomp_cache.c
           SC=$(find . -name "seccomp_cache.c" -path "*/kernelsu/*" | head -1)
-          if [ -n "$SC" ] && [ -f "$SC" ]; then
-              sed -i '1i #ifndef SECCOMP_ARCH_NATIVE_NR\n#define SECCOMP_ARCH_NATIVE_NR 4096\n#endif' "$SC"
-          fi
+          [ -n "$SC" ] && [ -f "$SC" ] && sed -i '1i #ifndef SECCOMP_ARCH_NATIVE_NR\n#define SECCOMP_ARCH_NATIVE_NR 4096\n#endif' "$SC"
 
-          echo "=== 5. CRITICAL: Backport path_umount for kernel < 5.9 ==="
-          # Kiểm tra xem path_umount đã có chưa
+      - name: Backport path_umount for kernel 4.19
+        run: |
           if ! grep -q "^int path_umount" fs/namespace.c 2>/dev/null; then
-              echo "[+] path_umount not found, adding backport..."
-              
-              # Tìm vị trí để chèn (sau hàm sys_umount hoặc cuối file)
-              # Thêm vào cuối file fs/namespace.c
-              cat >> fs/namespace.c << 'EOF'
-
-/* Backported path_umount for kernel < 5.9 (required by KernelSU) */
-static int can_umount(const struct path *path, int flags)
-{
-	struct mount *mnt = real_mount(path->mnt);
-
-	if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))
-		return -EINVAL;
-	if (!may_mount())
-		return -EPERM;
-	if (path->dentry != path->mnt->mnt_root)
-		return -EINVAL;
-	if (!check_mnt(mnt))
-		return -EINVAL;
-	if (mnt->mnt.mnt_flags & MNT_LOCKED)
-		return -EINVAL;
-	if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))
-		return -EPERM;
-	return 0;
-}
-
-int path_umount(struct path *path, int flags)
-{
-	struct mount *mnt = real_mount(path->mnt);
-	int ret;
-
-	ret = can_umount(path, flags);
-	if (!ret)
-		ret = do_umount(mnt, flags);
-
-	dput(path->dentry);
-	mntput_no_expire(mnt);
-	return ret;
-}
-EXPORT_SYMBOL(path_umount);
-EOF
-              echo "[+] Successfully added path_umount to fs/namespace.c"
+            echo "Adding path_umount backport..."
+            # Dùng printf để đảm bảo tab được giữ nguyên
+            {
+              printf '\n/* Backported path_umount for kernel < 5.9 */\n'
+              printf 'static int can_umount(const struct path *path, int flags)\n{\n'
+              printf '\tstruct mount *mnt = real_mount(path->mnt);\n\n'
+              printf '\tif (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))\n'
+              printf '\t\treturn -EINVAL;\n'
+              printf '\tif (!may_mount())\n'
+              printf '\t\treturn -EPERM;\n'
+              printf '\tif (path->dentry != path->mnt->mnt_root)\n'
+              printf '\t\treturn -EINVAL;\n'
+              printf '\tif (!check_mnt(mnt))\n'
+              printf '\t\treturn -EINVAL;\n'
+              printf '\tif (mnt->mnt.mnt_flags & MNT_LOCKED)\n'
+              printf '\t\treturn -EINVAL;\n'
+              printf '\tif (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))\n'
+              printf '\t\treturn -EPERM;\n'
+              printf '\treturn 0;\n}\n\n'
+              printf 'int path_umount(struct path *path, int flags)\n{\n'
+              printf '\tstruct mount *mnt = real_mount(path->mnt);\n'
+              printf '\tint ret;\n\n'
+              printf '\tret = can_umount(path, flags);\n'
+              printf '\tif (!ret)\n'
+              printf '\t\tret = do_umount(mnt, flags);\n\n'
+              printf '\tdput(path->dentry);\n'
+              printf '\tmntput_no_expire(mnt);\n'
+              printf '\treturn ret;\n}\n'
+              printf 'EXPORT_SYMBOL(path_umount);\n'
+            } >> fs/namespace.c
+            echo "path_umount added successfully"
           else
-              echo "[+] path_umount already exists in fs/namespace.c"
-              # Đảm bảo nó được export
-              if ! grep -q "EXPORT_SYMBOL(path_umount)" fs/namespace.c; then
-                  echo "EXPORT_SYMBOL(path_umount);" >> fs/namespace.c
-                  echo "[+] Added EXPORT_SYMBOL for path_umount"
-              fi
+            echo "path_umount already exists"
           fi
-          
-          # Đảm bảo declaration có trong fs/internal.h
-          if [ -f fs/internal.h ]; then
-              if ! grep -q "int path_umount" fs/internal.h; then
-                  echo "int path_umount(struct path *path, int flags);" >> fs/internal.h
-                  echo "[+] Added path_umount declaration to fs/internal.h"
-              fi
+          # Add declaration to fs/internal.h
+          if [ -f fs/internal.h ] && ! grep -q "int path_umount" fs/internal.h; then
+            echo "int path_umount(struct path *path, int flags);" >> fs/internal.h
+            echo "Declaration added to fs/internal.h"
           fi
-
-          echo "[+] All compatibility patches applied successfully."
 
       - name: Extract FinaSU Manager Signature
         run: |
-          echo "=== Extracting FinaSU Manager Signature ==="
           DEFAULT_SIZE="0x033b"
           DEFAULT_HASH="c371061b19d8c7d7d6133c6a9bafe198fa944e50c1b31c9d8daa8d7f1fc2d2d6"
-          
           if wget -q https://github.com/LyraVoid/FinaSU/releases/latest/download/FinaSU_Manager.apk -O manager.apk 2>/dev/null; then
-              if unzip -q manager.apk META-INF/CERT.RSA 2>/dev/null && [ -f META-INF/CERT.RSA ]; then
-                  KSU_SIZE=$(stat -c%s META-INF/CERT.RSA)
-                  KSU_HASH=$(openssl dgst -sha256 META-INF/CERT.RSA | awk '{print $2}')
-                  echo "$KSU_SIZE" > /tmp/ksu_size
-                  echo "$KSU_HASH" > /tmp/ksu_hash
-                  echo "[+] Successfully extracted FinaSU Manager signature."
-              else
-                  echo "$DEFAULT_SIZE" > /tmp/ksu_size
-                  echo "$DEFAULT_HASH" > /tmp/ksu_hash
-              fi
-          else
+            if unzip -q manager.apk META-INF/CERT.RSA 2>/dev/null && [ -f META-INF/CERT.RSA ]; then
+              KSU_SIZE=$(stat -c%s META-INF/CERT.RSA)
+              KSU_HASH=$(openssl dgst -sha256 META-INF/CERT.RSA | awk '{print $2}')
+              echo "$KSU_SIZE" > /tmp/ksu_size
+              echo "$KSU_HASH" > /tmp/ksu_hash
+            else
               echo "$DEFAULT_SIZE" > /tmp/ksu_size
               echo "$DEFAULT_HASH" > /tmp/ksu_hash
+            fi
+          else
+            echo "$DEFAULT_SIZE" > /tmp/ksu_size
+            echo "$DEFAULT_HASH" > /tmp/ksu_hash
           fi
 
       - name: Configure Kernel
@@ -195,37 +139,29 @@ EOF
           export CC=clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export LD=ld.lld
-
           make O=out ARCH=arm64 vendor/mt6768_defconfig
-          
           KSU_SIZE=$(cat /tmp/ksu_size)
           KSU_HASH=$(cat /tmp/ksu_hash)
           KSU_SIZE_HEX=$(printf '%x' "$KSU_SIZE")
-
-          echo "=== Injecting KernelSU-Next Legacy + FinaSU configs ==="
-          cat << EOF >> arch/arm64/configs/vendor/merlin.config
-          CONFIG_KSU=y
-          CONFIG_KSU_KPROBE_HOOKS=y
-          CONFIG_KPROBES=y
-          CONFIG_KPROBE_EVENTS=y
-          CONFIG_MODULES=y
-          CONFIG_MODULE_FORCE_LOAD=y
-          CONFIG_MODULE_FORCE_UNLOAD=y
-          CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y
-          CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES="mediatek/mt6768"
-          CONFIG_KSU_EXPECTED_SIZE=0x${KSU_SIZE_HEX}
-          CONFIG_KSU_EXPECTED_HASH="${KSU_HASH}"
-          EOF
-
+          {
+            echo "CONFIG_KSU=y"
+            echo "CONFIG_KSU_KPROBE_HOOKS=y"
+            echo "CONFIG_KPROBES=y"
+            echo "CONFIG_KPROBE_EVENTS=y"
+            echo "CONFIG_MODULES=y"
+            echo "CONFIG_MODULE_FORCE_LOAD=y"
+            echo "CONFIG_MODULE_FORCE_UNLOAD=y"
+            echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
+            echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES=\"mediatek/mt6768\""
+            echo "CONFIG_KSU_EXPECTED_SIZE=0x${KSU_SIZE_HEX}"
+            echo "CONFIG_KSU_EXPECTED_HASH=\"${KSU_HASH}\""
+          } >> arch/arm64/configs/vendor/merlin.config
           ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m out/.config arch/arm64/configs/vendor/merlin.config
           make O=out ARCH=arm64 olddefconfig
-          
           sed -i 's/CONFIG_BLK_INLINE_ENCRYPTION=y/CONFIG_BLK_INLINE_ENCRYPTION=n/g' out/.config
           sed -i 's/CONFIG_FS_ENCRYPTION=y/CONFIG_FS_ENCRYPTION=n/g' out/.config
           make O=out ARCH=arm64 olddefconfig
-          
-          echo "=== VERIFY CONFIG ==="
-          grep -E "CONFIG_KSU=y|CONFIG_KSU_KPROBE_HOOKS=y|CONFIG_BLK_INLINE_ENCRYPTION=n" out/.config || echo "WARNING: Config issue!"
+          grep -E "CONFIG_KSU=y|CONFIG_KSU_KPROBE_HOOKS=y" out/.config
 
       - name: Build Kernel
         run: |
@@ -241,34 +177,20 @@ EOF
           export OBJCOPY=llvm-objcopy
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
-          
-          # === ENABLE CCACHE ===
           export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
           ccache -z
           ccache -M 10G
-          
-          # === Disable ALL warnings ===
-          export KCFLAGS="-w"
-          export HOSTCFLAGS="-w"
-
           set -eo pipefail
-          echo "Starting kernel build with path_umount backport..."
-          make O=out ARCH=arm64 -j$(nproc) \
-            KCFLAGS="-w" \
-            HOSTCFLAGS="-w" \
-            Image.gz-dtb 2>&1 | tee build.log
-          
-          echo "=== CCACHE STATISTICS ==="
+          make O=out ARCH=arm64 -j$(nproc) KCFLAGS="-w" HOSTCFLAGS="-w" Image.gz-dtb 2>&1 | tee build.log
           ccache -s
 
       - name: Show errors if failed
         if: failure()
         run: |
-          echo "======== BUILD FAILED - CHECK ERRORS ========"
           if [ -f build.log ]; then
-            grep -n -B10 -A15 "error:" build.log | head -200 || echo "(khong co error:)"
-            echo "======== 150 dong cuoi ========"
-            tail -150 build.log || true
+            grep -n -B10 -A15 "error:" build.log | head -200 || echo "(no error found)"
+            echo "======== Last 150 lines ========"
+            tail -150 build.log
           fi
 
       - name: Upload build log
