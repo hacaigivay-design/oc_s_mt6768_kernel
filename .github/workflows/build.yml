@@ -42,7 +42,7 @@ jobs:
           sudo ln -sf /usr/bin/llvm-objdump-14 /usr/local/bin/llvm-objdump
           sudo ln -sf /usr/bin/llvm-strip-14   /usr/local/bin/llvm-strip
 
-      # 3. SETUP FINASU VÀ PATCH KERNEL
+      # 3. SETUP FINASU VÀ PATCH KERNEL (ĐÃ FIX LỖI MODULE_IMPORT_NS)
       - name: Setup FinaSU & Patch Kernel
         run: |
           set -e
@@ -55,7 +55,7 @@ jobs:
           mkdir -p drivers/kernelsu
           cp -r FinaSU_Source/kernel/* drivers/kernelsu/ 2>/dev/null || true
           
-          # COPY THÊM THƯ MỤC UAPI ĐỂ FIX LỖI THIẾU HEADER
+          # Copy thêm thư mục uapi (chứa app_profile.h)
           mkdir -p drivers/kernelsu/uapi
           cp -r FinaSU_Source/uapi/* drivers/kernelsu/uapi/ 2>/dev/null || true
           
@@ -69,9 +69,15 @@ jobs:
           chmod +x setup.sh 2>/dev/null || true
           export KSU_KERNEL_DIR="$(pwd)/../.."
           ./setup.sh 2>/dev/null || echo "Cảnh báo: setup.sh báo lỗi đường dẫn, nhưng patch đã chạy."
+          
+          echo "=== 4. Vô hiệu hóa MODULE_IMPORT_NS cho kernel cũ (4.14) ==="
+          if [ -f core/init.c ]; then
+            sed -i 's/^MODULE_IMPORT_NS/#MODULE_IMPORT_NS/' core/init.c
+            echo "✅ Đã comment MODULE_IMPORT_NS trong core/init.c"
+          fi
           cd ../..
           
-          echo "=== 4. Kiểm tra kết quả ==="
+          echo "=== 5. Kiểm tra kết quả ==="
           if [ -d "drivers/kernelsu" ]; then
             echo "✅ THÀNH CÔNG: Đã copy code FinaSU vào kernel!"
             grep -q "ksu_handle_execve" fs/exec.c && echo "✅ fs/exec.c đã được patch" || echo "⚠️ fs/exec.c CHƯA được patch"
@@ -80,7 +86,7 @@ jobs:
             exit 1
           fi
 
-      # 4. CẤU HÌNH KERNEL (ĐÃ FIX LỖI KCONFIG)
+      # 4. CẤU HÌNH KERNEL
       - name: Configure kernel
         run: |
           export ARCH=arm64
