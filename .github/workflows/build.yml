@@ -1,7 +1,16 @@
-name: Build Kernel with KernelSU Action (FinaSU)
+name: Build MT6768 Kernel for Merlin + FinaSU
 
 on:
   workflow_dispatch:
+    inputs:
+      finasu_ref:
+        description: 'FinaSU branch/tag/commit (mặc định: master)'
+        required: false
+        default: 'master'
+      ksu_hook:
+        description: 'Hook mode: kprobes | manual | auto'
+        required: false
+        default: 'auto'
 
 jobs:
   build:
@@ -9,52 +18,269 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Checkout Kernel Source
+      # ──────────────────────────────────────────────────────────────
+      # 1. CHECKOUT KERNEL SOURCE
+      # ──────────────────────────────────────────────────────────────
+      - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
-          path: kernel
           fetch-depth: 1
 
-      - name: Build Kernel with KernelSU Action
-        uses: xiaoleGun/KernelSU_Action@main
-        with:
-          # Thông tin repo của bạn
-          kernel_source: hacaigivay-design/oc_s_mt6768_kernel
-          kernel_branch: oc_4.19
-          kernel_config: vendor/mt6768_defconfig
-          
-          # Dùng nhánh legacy cho kernel 4.19
-          ksu_version: legacy
-          
-          # Compiler
-          clang_version: 14
-          disable_lto: true
-          
-          # Chữ ký FinaSU Manager (từ file APK bạn đã cung cấp)
-          ksu_expected_size: 0x03e6
-          ksu_expected_hash: 79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7
-          
-          # Đóng gói thành zip (tùy chọn)
-          anykernel3: false
-          
-          # Config bổ sung
-          extra_config: |
-            CONFIG_KSU=y
-            CONFIG_KPROBES=y
-            CONFIG_KPROBE_EVENTS=y
-            CONFIG_MODULES=y
-            CONFIG_MODULE_FORCE_LOAD=y
-            CONFIG_MODULE_FORCE_UNLOAD=y
-            CONFIG_BLK_INLINE_ENCRYPTION=n
+      # ──────────────────────────────────────────────────────────────
+      # 2. INSTALL DEPENDENCIES + CLANG 14 + GCC CROSS
+      # ──────────────────────────────────────────────────────────────
+      - name: Install dependencies + Clang 14 + GCC cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            python3 python3-pip zip unzip git curl wget \
+            device-tree-compiler lz4 xz-utils zstd cpio rsync \
+            pahole kmod libc6-dev-i386 patch \
+            clang-14 lld-14 llvm-14 \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi g++-arm-linux-gnueabi \
+            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
 
-      - name: Upload Build Artifacts
+          sudo ln -sf /usr/bin/clang-14        /usr/local/bin/clang
+          sudo ln -sf /usr/bin/ld.lld-14       /usr/local/bin/ld.lld
+          sudo ln -sf /usr/bin/llvm-ar-14      /usr/local/bin/llvm-ar
+          sudo ln -sf /usr/bin/llvm-nm-14      /usr/local/bin/llvm-nm
+          sudo ln -sf /usr/bin/llvm-objcopy-14 /usr/local/bin/llvm-objcopy
+          sudo ln -sf /usr/bin/llvm-objdump-14 /usr/local/bin/llvm-objdump
+          sudo ln -sf /usr/bin/llvm-strip-14   /usr/local/bin/llvm-strip
+
+          echo "=== Clang ==="
+          clang --version | head -1
+          echo "=== GCC cross ==="
+          aarch64-linux-gnu-gcc --version | head -1
+
+      # ──────────────────────────────────────────────────────────────
+      # 3. SETUP FINASU (tự động detect cấu trúc + setup.sh)
+      # ──────────────────────────────────────────────────────────────
+      - name: Setup FinaSU (auto-detect)
+        run: |
+          set -e
+          REF="${{ github.event.inputs.finasu_ref || 'master' }}"
+          echo "=== Clone FinaSU @ $REF ==="
+          git clone --depth=1 -b "$REF" https://github.com/LyraVoid/FinaSU.git FinaSU || \
+            git clone --depth=1 https://github.com/LyraVoid/FinaSU.git FinaSU
+
+          cd FinaSU
+          echo "FinaSU commit: $(git rev-parse --short HEAD)"
+          echo "=== Cấu trúc repo (top level) ==="
+          ls -la
+
+          # Tìm setup.sh ở nhiều vị trí khả dĩ
+          SETUP=""
+          for p in kernel/setup.sh setup.sh kernel/setup setup.sh; do
+            if [ -f "$p" ]; then SETUP="$p"; break; fi
+          done
+
+          if [ -z "$SETUP" ]; then
+            echo "!! Không tìm thấy setup.sh — dump toàn bộ tree để debug:"
+            find . -maxdepth 3 -type f | head -80
+            exit 1
+          fi
+
+          echo "=== Chạy $SETUP ==="
+          chmod +x "$SETUP"
+          # setup.sh của KernelSU-fork cần chạy từ root kernel source, không phải trong FinaSU/
+          # → copy FinaSU ra ngoài rồi chạy từ kernel root
+          cd ..
+          if [ -d "FinaSU/drivers/kernelsu" ] || [ -d "FinaSU/kernel" ]; then
+            echo "=== FinaSU có source kernel, chạy setup từ kernel root ==="
+            ( cd FinaSU && "./$SETUP" ) || {
+              echo "!! setup.sh fail — thử copy thủ công drivers/kernelsu"
+              # Fallback: copy thủ công nếu setup.sh không tương thích
+              if [ -d FinaSU/drivers/kernelsu ]; then
+                cp -r FinaSU/drivers/kernelsu drivers/
+                echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+              fi
+            }
+          fi
+
+          # Kiểm tra kết quả
+          echo "=== Kiểm tra drivers/ ==="
+          ls -d drivers/kernelsu 2>/dev/null && echo "OK: drivers/kernelsu tồn tại" || echo "WARN: chưa có drivers/kernelsu"
+
+      # ──────────────────────────────────────────────────────────────
+      # 4. PATCH KERNEL SOURCE (tự động — fs/exec.c, fs/open.c, ...)
+      # ──────────────────────────────────────────────────────────────
+      - name: Auto-patch kernel source for FinaSU
+        run: |
+          set +e
+          echo "=== Tìm patch files trong FinaSU ==="
+          find FinaSU -maxdepth 3 -name "*.patch" -o -name "*.diff" 2>/dev/null | while read p; do
+            echo "-- apply $p"
+            patch -p1 --forward --batch < "$p" || echo "  (skip $p)"
+          done
+
+          echo "=== Nếu setup.sh đã patch sẵn thì bỏ qua ==="
+          grep -q "ksu_handle_execve" fs/exec.c && echo "OK: fs/exec.c đã có hook KSU" || echo "WARN: fs/exec.c chưa có hook"
+
+          # Đảm bảo drivers/Makefile có entry (nếu setup.sh chưa thêm)
+          if [ -d drivers/kernelsu ] && ! grep -q "kernelsu" drivers/Makefile; then
+            echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+            echo "OK: đã thêm kernelsu vào drivers/Makefile"
+          fi
+
+      # ──────────────────────────────────────────────────────────────
+      # 5. ENABLE FINASU CONFIG (tự động detect tên config)
+      # ──────────────────────────────────────────────────────────────
+      - name: Enable FinaSU config (auto-detect)
+        run: |
+          CFG=arch/arm64/configs/vendor/merlin.config
+          touch "$CFG"
+
+          # Detect tên config chính từ Kconfig của FinaSU
+          if [ -f drivers/kernelsu/Kconfig ]; then
+            MAIN_CFG=$(grep -oE 'config [A-Z_]+' drivers/kernelsu/Kconfig | head -1 | awk '{print $2}')
+            echo "Detected main config: CONFIG_${MAIN_CFG}"
+          fi
+          MAIN_CFG="${MAIN_CFG:-KSU}"
+
+          HOOK="${{ github.event.inputs.ksu_hook || 'auto' }}"
+          echo "Hook mode yêu cầu: $HOOK"
+
+          add_cfg() {
+            grep -q "^$1" "$CFG" || echo "$1" >> "$CFG"
+          }
+
+          # Config chính
+          add_cfg "CONFIG_${MAIN_CFG}=y"
+          add_cfg "CONFIG_${MAIN_CFG}_DEBUG=n"
+
+          # Config phụ trợ bắt buộc cho non-GKI
+          add_cfg "CONFIG_KPROBES=y"
+          add_cfg "CONFIG_KPROBE_EVENTS=y"
+          add_cfg "CONFIG_HAVE_KPROBES=y"
+          add_cfg "CONFIG_MODULES=y"
+          add_cfg "CONFIG_OVERLAY_FS=y"
+
+          # Hook mode (nếu FinaSU hỗ trợ)
+          if [ "$HOOK" = "kprobes" ] || [ "$HOOK" = "auto" ]; then
+            grep -q "KSU_KPROBES_HOOK" drivers/kernelsu/Kconfig 2>/dev/null && \
+              add_cfg "CONFIG_KSU_KPROBES_HOOK=y"
+          fi
+          if [ "$HOOK" = "manual" ]; then
+            grep -q "KSU_MANUAL_HOOK" drivers/kernelsu/Kconfig 2>/dev/null && \
+              add_cfg "CONFIG_KSU_MANUAL_HOOK=y"
+          fi
+
+          echo "=== merlin.config sau khi thêm ==="
+          tail -20 "$CFG"
+
+      # ──────────────────────────────────────────────────────────────
+      # 6. PREPARE OUTPUT DIR
+      # ──────────────────────────────────────────────────────────────
+      - name: Prepare output dir
+        run: mkdir -p out
+
+      # ──────────────────────────────────────────────────────────────
+      # 7. CONFIGURE KERNEL
+      # ──────────────────────────────────────────────────────────────
+      - name: Configure kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+
+          make O=out ARCH=arm64 vendor/mt6768_defconfig
+
+          echo "=== Merge merlin.config ==="
+          ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m \
+            out/.config \
+            arch/arm64/configs/vendor/merlin.config
+
+          make O=out ARCH=arm64 olddefconfig
+
+          echo "=== KIỂM TRA CONFIG ==="
+          grep -E "CONFIG_BLK_INLINE_ENCRYPTION|CONFIG_ARCH_MEDIATEK|CONFIG_CC_OPTIMIZE" out/.config || true
+          echo "=== FINASU CONFIG ==="
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_FINASU" out/.config || echo "(không có config KSU/FinaSU!)"
+
+      # ──────────────────────────────────────────────────────────────
+      # 8. BUILD KERNEL (CLANG 14)
+      # ──────────────────────────────────────────────────────────────
+      - name: Build kernel (Clang 14)
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+          echo "=== Clang đang dùng ==="
+          clang --version | head -1
+
+          set -o pipefail
+          make O=out ARCH=arm64 -j$(nproc) \
+            CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            KCFLAGS="-Wno-error -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable" \
+            2>&1 | tee build.log | tail -300
+
+      # ──────────────────────────────────────────────────────────────
+      # 9. SHOW ERRORS IF FAILED
+      # ──────────────────────────────────────────────────────────────
+      - name: Show errors if failed
+        if: failure()
+        run: |
+          if [ ! -f build.log ]; then
+            echo "build.log KHÔNG TỒN TẠI — fail trước bước Build kernel"
+            exit 0
+          fi
+          echo "======== error: ĐẦU TIÊN ========"
+          grep -n -B10 -A15 "error:" build.log | head -200 || echo "(không có error:)"
+          echo ""
+          echo "======== Error 1/2 ========"
+          grep -n -B5 -A5 "Error [12]" build.log | head -100 || true
+          echo ""
+          echo "======== Lỗi FinaSU/KSU (nếu có) ========"
+          grep -n -B5 -A10 -iE "kernelsu|ksu|finasu" build.log | head -120 || true
+          echo ""
+          echo "======== 150 dòng cuối ========"
+          tail -150 build.log || true
+
+      # ──────────────────────────────────────────────────────────────
+      # 10. UPLOAD BUILD LOG
+      # ──────────────────────────────────────────────────────────────
+      - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-Build-Output
-          path: |
-            kernel/out/arch/arm64/boot/Image*
-            kernel/out/arch/arm64/boot/dts/mediatek/*.dtb
-            kernel/AnyKernel3/*.zip
-          if-no-files-found: error
+          name: build-log
+          path: build.log
+          if-no-files-found: warn
           retention-days: 7
+
+      # ──────────────────────────────────────────────────────────────
+      # 11. UPLOAD KERNEL ARTIFACTS
+      # ──────────────────────────────────────────────────────────────
+      - name: Upload kernel artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-merlin-finasu
+          path: |
+            out/arch/arm64/boot/Image.gz-dtb
+            out/arch/arm64/boot/Image.gz
+            out/arch/arm64/boot/Image
+            out/arch/arm64/boot/dts/mediatek/*.dtb
+          if-no-files-found: warn
+          retention-days: 30
