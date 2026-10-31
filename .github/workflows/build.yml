@@ -101,6 +101,68 @@ jobs:
               sed -i '1i #ifndef SECCOMP_ARCH_NATIVE_NR\n#define SECCOMP_ARCH_NATIVE_NR 4096\n#endif' "$SC"
           fi
 
+          echo "=== 5. CRITICAL: Backport path_umount for kernel < 5.9 ==="
+          # Kiểm tra xem path_umount đã có chưa
+          if ! grep -q "^int path_umount" fs/namespace.c 2>/dev/null; then
+              echo "[+] path_umount not found, adding backport..."
+              
+              # Tìm vị trí để chèn (sau hàm sys_umount hoặc cuối file)
+              # Thêm vào cuối file fs/namespace.c
+              cat >> fs/namespace.c << 'EOF'
+
+/* Backported path_umount for kernel < 5.9 (required by KernelSU) */
+static int can_umount(const struct path *path, int flags)
+{
+	struct mount *mnt = real_mount(path->mnt);
+
+	if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))
+		return -EINVAL;
+	if (!may_mount())
+		return -EPERM;
+	if (path->dentry != path->mnt->mnt_root)
+		return -EINVAL;
+	if (!check_mnt(mnt))
+		return -EINVAL;
+	if (mnt->mnt.mnt_flags & MNT_LOCKED)
+		return -EINVAL;
+	if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	return 0;
+}
+
+int path_umount(struct path *path, int flags)
+{
+	struct mount *mnt = real_mount(path->mnt);
+	int ret;
+
+	ret = can_umount(path, flags);
+	if (!ret)
+		ret = do_umount(mnt, flags);
+
+	dput(path->dentry);
+	mntput_no_expire(mnt);
+	return ret;
+}
+EXPORT_SYMBOL(path_umount);
+EOF
+              echo "[+] Successfully added path_umount to fs/namespace.c"
+          else
+              echo "[+] path_umount already exists in fs/namespace.c"
+              # Đảm bảo nó được export
+              if ! grep -q "EXPORT_SYMBOL(path_umount)" fs/namespace.c; then
+                  echo "EXPORT_SYMBOL(path_umount);" >> fs/namespace.c
+                  echo "[+] Added EXPORT_SYMBOL for path_umount"
+              fi
+          fi
+          
+          # Đảm bảo declaration có trong fs/internal.h
+          if [ -f fs/internal.h ]; then
+              if ! grep -q "int path_umount" fs/internal.h; then
+                  echo "int path_umount(struct path *path, int flags);" >> fs/internal.h
+                  echo "[+] Added path_umount declaration to fs/internal.h"
+              fi
+          fi
+
           echo "[+] All compatibility patches applied successfully."
 
       - name: Extract FinaSU Manager Signature
@@ -185,14 +247,12 @@ jobs:
           ccache -z
           ccache -M 10G
           
-          # === NUCLEAR OPTION: Disable ALL warnings via KCFLAGS ===
-          # -w = tắt TẤT CẢ warning (override mọi -Werror từ mọi Makefile)
-          # Đây là cách chuẩn, an toàn 100%, không cần patch Makefile
+          # === Disable ALL warnings ===
           export KCFLAGS="-w"
           export HOSTCFLAGS="-w"
 
           set -eo pipefail
-          echo "Starting kernel build with KCFLAGS=-w (ALL warnings disabled)..."
+          echo "Starting kernel build with path_umount backport..."
           make O=out ARCH=arm64 -j$(nproc) \
             KCFLAGS="-w" \
             HOSTCFLAGS="-w" \
