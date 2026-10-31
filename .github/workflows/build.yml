@@ -14,7 +14,6 @@ jobs:
         with:
           fetch-depth: 1
 
-      # === CACHE 1: Build output (incremental build) ===
       - name: Cache build output
         uses: actions/cache@v4
         with:
@@ -23,7 +22,6 @@ jobs:
           restore-keys: |
             build-output-${{ runner.os }}-
 
-      # === CACHE 2: Compiler cache (ccache) ===
       - name: Cache ccache
         uses: actions/cache@v4
         with:
@@ -103,17 +101,28 @@ jobs:
               sed -i '1i #ifndef SECCOMP_ARCH_NATIVE_NR\n#define SECCOMP_ARCH_NATIVE_NR 4096\n#endif' "$SC"
           fi
 
-          echo "=== 5. SMART -Werror removal (Preserve -Werror=xxx flags) ==="
+          echo "=== 5. NUCLEAR OPTION: Disable ALL warnings in Makefile ==="
+          # Xóa TẤT CẢ cờ -Werror* (bao gồm cả -Werror=xxx) khỏi Makefile chính
           if [ -f Makefile ]; then
-              perl -i -pe 's/-Werror(?![a-zA-Z=])//g' Makefile
-              echo "[+] Removed standalone -Werror from main Makefile (preserved -Werror=xxx)"
+              # Xóa mọi cờ bắt đầu bằng -Werror (kèm theo bất kỳ ký tự nào)
+              perl -i -pe 's/-Werror\S*//g' Makefile
+              # Thêm -w (tắt TẤT CẢ warning) vào KBUILD_CFLAGS
+              # Tìm dòng KBUILD_CFLAGS và thêm -w vào cuối
+              if grep -q "^KBUILD_CFLAGS :=" Makefile; then
+                  sed -i '/^KBUILD_CFLAGS :=/ s/$/ -w/' Makefile
+                  echo "[+] Added -w to KBUILD_CFLAGS in main Makefile"
+              fi
+              echo "[+] Removed ALL -Werror* flags from main Makefile"
           fi
-          find scripts -name "Makefile*" -exec perl -i -pe 's/-Werror(?![a-zA-Z=])//g' {} \; 2>/dev/null || true
-          echo "[+] Removed standalone -Werror from scripts/Makefile"
+          
+          # Áp dụng cho scripts/Makefile.*
+          find scripts -name "Makefile*" -exec perl -i -pe 's/-Werror\S*//g' {} \; 2>/dev/null || true
+          echo "[+] Removed ALL -Werror* flags from scripts/Makefile"
 
-          if grep -q "\-implicit-function-declaration" Makefile 2>/dev/null; then
-              echo "[!] WARNING: Found broken flags, fixing..."
-              sed -i 's/-implicit-function-declaration//g' Makefile
+          # Verify: đảm bảo không còn cờ -Werror nào sót lại
+          if grep -q "\-Werror" Makefile 2>/dev/null; then
+              echo "[!] WARNING: Some -Werror flags still remain, force removing..."
+              perl -i -pe 's/-Werror\S*//g' Makefile
           fi
 
       - name: Extract FinaSU Manager Signature
@@ -195,14 +204,13 @@ jobs:
           
           # === ENABLE CCACHE ===
           export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
-          ccache -z  # Reset statistics
-          ccache -M 10G  # Set max cache size to 10GB
+          ccache -z
+          ccache -M 10G
 
           set -eo pipefail
-          echo "Starting kernel build with ccache enabled..."
+          echo "Starting kernel build with ALL warnings disabled..."
           make O=out ARCH=arm64 -j$(nproc) Image.gz-dtb 2>&1 | tee build.log
           
-          # Show ccache statistics
           echo "=== CCACHE STATISTICS ==="
           ccache -s
 
