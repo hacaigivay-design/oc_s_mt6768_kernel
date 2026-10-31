@@ -76,7 +76,7 @@ jobs:
             exit 1
           fi
 
-      # 4. CẤU HÌNH KERNEL (ĐÃ FIX LỖI CONFIG)
+      # 4. CẤU HÌNH KERNEL (ĐÃ FIX LỖI KCONFIG)
       - name: Configure kernel
         run: |
           export ARCH=arm64
@@ -92,26 +92,35 @@ jobs:
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
 
-          # Tạo file merlin.config nếu chưa có
+          echo "=== 1. Móc nối Kconfig của FinaSU ==="
+          if ! grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig; then
+            echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+          fi
+
+          echo "=== 2. Tạo merlin.config ==="
           CFG=arch/arm64/configs/vendor/merlin.config
           touch "$CFG"
-          
-          # Thêm các config KSU vào merlin.config
           grep -q '^CONFIG_KSU=y' "$CFG" || echo 'CONFIG_KSU=y' >> "$CFG"
-          grep -q '^CONFIG_KSU_DEBUG' "$CFG" || echo 'CONFIG_KSU_DEBUG=n' >> "$CFG"
           grep -q '^CONFIG_KPROBES=y' "$CFG" || echo 'CONFIG_KPROBES=y' >> "$CFG"
           grep -q '^CONFIG_KPROBE_EVENTS=y' "$CFG" || echo 'CONFIG_KPROBE_EVENTS=y' >> "$CFG"
           grep -q '^CONFIG_OVERLAY_FS=y' "$CFG" || echo 'CONFIG_OVERLAY_FS=y' >> "$CFG"
 
-          # Build config
+          echo "=== 3. Chạy Config ==="
           make O=out ARCH=arm64 vendor/mt6768_defconfig
           ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m out/.config "$CFG"
           make O=out ARCH=arm64 olddefconfig
 
-          # ÉP BUỘC BẬT KSU VÀO .CONFIG (Bước quan trọng nhất để fix lỗi của bạn)
-          echo "CONFIG_KSU=y" >> out/.config
+          echo "=== 4. Ép buộc CONFIG_KSU=y vào out/.config ==="
+          sed -i 's/^# CONFIG_KSU is not set/CONFIG_KSU=y/' out/.config
+          sed -i 's/^CONFIG_KSU=n/CONFIG_KSU=y/' out/.config
+          
+          if ! grep -q "^CONFIG_KSU=" out/.config; then
+            echo "CONFIG_KSU=y" >> out/.config
+          fi
+          
           echo "CONFIG_KSU_DEBUG=n" >> out/.config
-          make O=out ARCH=arm64 olddefconfig
+          echo "CONFIG_KPROBES=y" >> out/.config
+          echo "CONFIG_KPROBE_EVENTS=y" >> out/.config
 
           echo "=== KIỂM TRA LẠI CONFIG FINASU ==="
           grep "CONFIG_KSU" out/.config || (echo "❌ LỖI: KHÔNG THỂ BẬT CONFIG_KSU!" && exit 1)
@@ -149,7 +158,7 @@ jobs:
           cp out/arch/arm64/boot/Image AnyKernel3/
           
           # Xóa các file thừa của AnyKernel3 mẫu
-          rm -rf AnyKernel3/.git AnyKernel3/README.md AnyKernel3/anykernel.sh.bak
+          rm -rf AnyKernel3/.git AnyKernel3/README.md
           
           # Sửa file anykernel.sh để nhận diện đúng thiết bị (tuỳ chọn)
           sed -i 's/device.name1=.*/device.name1=merlin/' AnyKernel3/anykernel.sh
@@ -157,7 +166,7 @@ jobs:
           
           echo "=== Nén thành file zip ==="
           cd AnyKernel3
-          zip -r9 ../FinaSU_Merlin_Kernel.zip * -x .git/* -x README.md
+          zip -r9 ../FinaSU_Merlin_Flashable_Zip.zip * -x .git/* -x README.md
 
       # 7. HIỂN THỊ LỖI NẾU CÓ
       - name: Show errors if failed
@@ -190,7 +199,6 @@ jobs:
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/Image.gz
             out/arch/arm64/boot/Image
-            out/arch/arm64/boot/dts/mediatek/*.dtb
           retention-days: 30
 
       - name: Upload AnyKernel3 Zip
@@ -198,5 +206,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: FinaSU_Merlin_Flashable_Zip
-          path: FinaSU_Merlin_Kernel.zip
+          path: FinaSU_Merlin_Flashable_Zip.zip
           retention-days: 30
