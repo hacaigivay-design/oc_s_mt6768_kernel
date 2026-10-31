@@ -42,7 +42,7 @@ jobs:
           sudo ln -sf /usr/bin/llvm-objdump-14 /usr/local/bin/llvm-objdump
           sudo ln -sf /usr/bin/llvm-strip-14   /usr/local/bin/llvm-strip
 
-      # 3. SETUP FINASU VÀ PATCH KERNEL (ĐÃ FIX LỖI MODULE_IMPORT_NS)
+      # 3. SETUP FINASU VÀ PATCH KERNEL (ĐÃ FIX CÚ PHÁP COMMENT)
       - name: Setup FinaSU & Patch Kernel
         run: |
           set -e
@@ -71,8 +71,9 @@ jobs:
           ./setup.sh 2>/dev/null || echo "Cảnh báo: setup.sh báo lỗi đường dẫn, nhưng patch đã chạy."
           
           echo "=== 4. Vô hiệu hóa MODULE_IMPORT_NS cho kernel cũ (4.14) ==="
+          # SỬA LỖI: Dùng // thay vì # để comment trong C/C++
           if [ -f core/init.c ]; then
-            sed -i 's/^MODULE_IMPORT_NS/#MODULE_IMPORT_NS/' core/init.c
+            sed -i 's/^MODULE_IMPORT_NS/\/\/ MODULE_IMPORT_NS/' core/init.c
             echo "✅ Đã comment MODULE_IMPORT_NS trong core/init.c"
           fi
           cd ../..
