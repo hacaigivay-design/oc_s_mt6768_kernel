@@ -42,7 +42,7 @@ jobs:
           sudo ln -sf /usr/bin/llvm-objdump-14 /usr/local/bin/llvm-objdump
           sudo ln -sf /usr/bin/llvm-strip-14   /usr/local/bin/llvm-strip
 
-      # 3. SETUP FINASU VÀ PATCH KERNEL (FIX CHO KERNEL 4.19)
+      # 3. SETUP FINASU VÀ PATCH KERNEL (TẤT CẢ CÁC FIX)
       - name: Setup FinaSU & Patch Kernel
         run: |
           set -e
@@ -71,16 +71,22 @@ jobs:
           ./setup.sh 2>/dev/null || echo "Cảnh báo: setup.sh báo lỗi đường dẫn, nhưng patch đã chạy."
           
           echo "=== 4. Fix lỗi cho kernel 4.19 ==="
-          # Fix lỗi MODULE_IMPORT_NS (dùng // thay vì #)
+          # Fix lỗi MODULE_IMPORT_NS
           if [ -f core/init.c ]; then
             sed -i 's/^MODULE_IMPORT_NS/\/\/ MODULE_IMPORT_NS/' core/init.c
             echo "✅ Đã comment MODULE_IMPORT_NS"
           fi
           
-          # Vô hiệu hóa file_wrapper.c (do thiếu hàm iopoll/remap_file_range)
+          # Vô hiệu hóa file_wrapper.c (Kernel 4.19 thiếu iopoll/remap_file_range)
           if [ -f infra/file_wrapper.c ]; then
             echo "// Disabled for kernel 4.19 (missing iopoll/remap_file_range)" > infra/file_wrapper.c
             echo "✅ Đã vô hiệu hóa file_wrapper.c"
+          fi
+
+          # Vô hiệu hóa seccomp_cache.c (Kernel 4.19 thiếu SECCOMP_ARCH_NATIVE_NR)
+          if [ -f infra/seccomp_cache.c ]; then
+            echo "// Disabled for kernel 4.19 (missing SECCOMP_ARCH_NATIVE_NR)" > infra/seccomp_cache.c
+            echo "✅ Đã vô hiệu hóa seccomp_cache.c"
           fi
           cd ../..
           
@@ -138,6 +144,7 @@ jobs:
           echo "CONFIG_KSU_DEBUG=n" >> out/.config
           echo "CONFIG_KPROBES=y" >> out/.config
           echo "CONFIG_KPROBE_EVENTS=y" >> out/.config
+          echo "CONFIG_KSU_SECCOMP_CACHE=n" >> out/.config
 
           echo "=== KIỂM TRA LẠI CONFIG FINASU ==="
           grep "CONFIG_KSU" out/.config || (echo "❌ LỖI: KHÔNG THỂ BẬT CONFIG_KSU!" && exit 1)
