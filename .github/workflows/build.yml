@@ -51,7 +51,7 @@ jobs:
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
           echo "[+] KernelSU-Next legacy setup completed."
 
-      - name: Apply Kernel Compatibility Patches (NO fs/ patches to avoid bootloop)
+      - name: Apply Kernel Compatibility Patches
         run: |
           echo "=== Applying kernel patches ==="
           
@@ -112,8 +112,9 @@ jobs:
       - name: Extract FinaSU Manager Signature Automatically
         run: |
           echo "=== Downloading and extracting FinaSU signature ==="
-          # Tải FinaSU APK mới nhất
-          wget -q "https://github.com/LyraVoid/FinaSU/releases/latest/download/FinaSU_Manager.apk" -O manager.apk
+          # SỬ DỤNG LINK CHÍNH XÁC BẠN ĐÃ CUNG CẤP
+          FINASU_URL="https://github.com/LyraVoid/FinaSU/releases/download/v1.3.2/FinaSU_v1.3.2_33090-release.apk"
+          wget -q "$FINASU_URL" -O manager.apk
           
           if [ -f manager.apk ]; then
             # Giải nén file chữ ký
@@ -130,7 +131,7 @@ jobs:
             echo "$KSU_SIZE" > /tmp/ksu_size
             echo "$KSU_HASH" > /tmp/ksu_hash
           else
-            echo "Failed to download FinaSU APK!"
+            echo "Failed to download FinaSU APK from the provided URL!"
             exit 1
           fi
 
