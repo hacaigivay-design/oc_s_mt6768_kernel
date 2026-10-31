@@ -1,4 +1,4 @@
-name: Build MT6768 Kernel (KernelSU-Next Legacy + FinaSU Manager)
+name: Build MT6768 Kernel (FinaSU Integrated)
 
 on:
   workflow_dispatch:
@@ -51,11 +51,11 @@ jobs:
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
           echo "[+] KernelSU-Next legacy setup completed."
 
-      - name: Apply Compatibility Patches
+      - name: Apply Kernel Compatibility Patches (NO fs/ patches to avoid bootloop)
         run: |
-          echo "=== Applying compatibility patches ==="
+          echo "=== Applying kernel patches ==="
           
-          # 1. Fix blk-crypto (Dùng if an toàn, tránh trả về exit code 1)
+          # 1. Fix blk-crypto
           if [ -f include/linux/keyslot-manager.h ]; then
             sed -i 's/__always_inline inline void ksm_flock/void ksm_flock/g' include/linux/keyslot-manager.h
             sed -i 's/inline void ksm_flock/void ksm_flock/g' include/linux/keyslot-manager.h
@@ -87,12 +87,7 @@ jobs:
             echo "[+] seccomp_cache.c patched"
           fi
           
-          # BUỘC bước này luôn trả về thành công (exit code 0)
-          exit 0
-
-      - name: Backport path_umount for kernel 4.19
-        run: |
-          echo "=== Backporting path_umount ==="
+          # 5. Backport path_umount
           if ! grep -q "^int path_umount" fs/namespace.c 2>/dev/null; then
             printf '\n/* Backported path_umount for kernel < 5.9 */\n' >> fs/namespace.c
             printf 'static int can_umount(const struct path *path, int flags)\n{\n' >> fs/namespace.c
@@ -110,39 +105,36 @@ jobs:
             printf '\tif (!ret)\n\t\tret = do_umount(mnt, flags);\n\n' >> fs/namespace.c
             printf '\tdput(path->dentry);\n\tmntput_no_expire(mnt);\n\treturn ret;\n}\n' >> fs/namespace.c
             printf 'EXPORT_SYMBOL(path_umount);\n' >> fs/namespace.c
-            echo "[+] path_umount added to fs/namespace.c"
-          else
-            echo "[+] path_umount already exists"
-          fi
-          
-          if [ -f fs/internal.h ] && ! grep -q "int path_umount" fs/internal.h; then
-            echo "int path_umount(struct path *path, int flags);" >> fs/internal.h
-            echo "[+] Declaration added to fs/internal.h"
+            echo "[+] path_umount added"
           fi
           exit 0
 
-      - name: Extract FinaSU Manager Signature
+      - name: Extract FinaSU Manager Signature Automatically
         run: |
-          DEFAULT_SIZE="0x033b"
-          DEFAULT_HASH="c371061b19d8c7d7d6133c6a9bafe198fa944e50c1b31c9d8daa8d7f1fc2d2d6"
-          if wget -q https://github.com/LyraVoid/FinaSU/releases/latest/download/FinaSU_Manager.apk -O manager.apk 2>/dev/null; then
-            if unzip -q manager.apk META-INF/CERT.RSA 2>/dev/null && [ -f META-INF/CERT.RSA ]; then
-              KSU_SIZE=$(stat -c%s META-INF/CERT.RSA)
-              KSU_HASH=$(openssl dgst -sha256 META-INF/CERT.RSA | awk '{print $2}')
-              echo "$KSU_SIZE" > /tmp/ksu_size
-              echo "$KSU_HASH" > /tmp/ksu_hash
-              echo "[+] FinaSU signature extracted"
-            else
-              echo "$DEFAULT_SIZE" > /tmp/ksu_size
-              echo "$DEFAULT_HASH" > /tmp/ksu_hash
-            fi
+          echo "=== Downloading and extracting FinaSU signature ==="
+          # Tải FinaSU APK mới nhất
+          wget -q "https://github.com/LyraVoid/FinaSU/releases/latest/download/FinaSU_Manager.apk" -O manager.apk
+          
+          if [ -f manager.apk ]; then
+            # Giải nén file chữ ký
+            unzip -q manager.apk META-INF/CERT.RSA
+            
+            # Lấy Size và Hash
+            KSU_SIZE=$(stat -c%s META-INF/CERT.RSA)
+            KSU_HASH=$(openssl dgst -sha256 META-INF/CERT.RSA | awk '{print $2}')
+            
+            echo "FinaSU Size: 0x$(printf '%x' $KSU_SIZE)"
+            echo "FinaSU Hash: $KSU_HASH"
+            
+            # Lưu vào file để bước sau đọc
+            echo "$KSU_SIZE" > /tmp/ksu_size
+            echo "$KSU_HASH" > /tmp/ksu_hash
           else
-            echo "$DEFAULT_SIZE" > /tmp/ksu_size
-            echo "$DEFAULT_HASH" > /tmp/ksu_hash
+            echo "Failed to download FinaSU APK!"
+            exit 1
           fi
-          exit 0
 
-      - name: Configure Kernel
+      - name: Configure Kernel with FinaSU Signature
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
@@ -157,9 +149,9 @@ jobs:
           KSU_HASH=$(cat /tmp/ksu_hash)
           KSU_SIZE_HEX=$(printf '%x' "$KSU_SIZE")
           
+          # Inject config và chữ ký FinaSU
           {
             echo "CONFIG_KSU=y"
-            echo "CONFIG_KSU_KPROBE_HOOKS=y"
             echo "CONFIG_KPROBES=y"
             echo "CONFIG_KPROBE_EVENTS=y"
             echo "CONFIG_MODULES=y"
@@ -178,8 +170,8 @@ jobs:
           sed -i 's/CONFIG_FS_ENCRYPTION=y/CONFIG_FS_ENCRYPTION=n/g' out/.config
           make O=out ARCH=arm64 olddefconfig
           
-          echo "=== VERIFY CONFIG ==="
-          grep -E "CONFIG_KSU=y|CONFIG_KSU_KPROBE_HOOKS=y" out/.config
+          echo "=== VERIFY FINASU CONFIG ==="
+          grep "CONFIG_KSU_EXPECTED" out/.config
 
       - name: Build Kernel
         run: |
@@ -201,7 +193,7 @@ jobs:
           ccache -M 10G
           
           set -eo pipefail
-          echo "Starting kernel build..."
+          echo "Starting kernel build with FinaSU integrated..."
           make O=out ARCH=arm64 -j$(nproc) KCFLAGS="-w" HOSTCFLAGS="-w" Image.gz-dtb 2>&1 | tee build.log
           
           echo "=== CCACHE STATISTICS ==="
@@ -231,7 +223,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-merlin-ksunext-finasu
+          name: kernel-merlin-finasu
           path: |
             out/arch/arm64/boot/Image*
             out/arch/arm64/boot/dts/mediatek/*.dtb
