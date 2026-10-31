@@ -101,22 +101,45 @@ jobs:
               sed -i '1i #ifndef SECCOMP_ARCH_NATIVE_NR\n#define SECCOMP_ARCH_NATIVE_NR 4096\n#endif' "$SC"
           fi
 
-          echo "=== 5. SAFE -Werror handling (REPLACE, not DELETE) ==="
-          # THAY THẾ -Werror bằng -Wno-error (không xóa ký tự, giữ nguyên cấu trúc Makefile)
-          if [ -f Makefile ]; then
-              sed -i 's/-Werror/-Wno-error/g' Makefile
-              echo "[+] Replaced -Werror with -Wno-error in main Makefile"
-          fi
-          # Áp dụng cho scripts/Makefile.*
-          find scripts -name "Makefile*" -exec sed -i 's/-Werror/-Wno-error/g' {} \; 2>/dev/null || true
-          echo "[+] Replaced -Werror with -Wno-error in scripts/Makefile"
+          echo "=== 5. SMART -Werror handling (3-rule Perl replacement) ==="
+          # Tạo script Perl xử lý thông minh 3 trường hợp:
+          # Rule 1: -Werror=xxx → -Wno-error=xxx (giữ nguyên dấu =)
+          # Rule 2: -Werror-xxx → XÓA (cú pháp GCC cũ, không có cách tắt)
+          # Rule 3: -Werror đơn lẻ → -Wno-error
+          cat > /tmp/fix_werror.pl << 'PERL_EOF'
+          #!/usr/bin/perl
+          use strict;
+          use warnings;
           
-          # Verify: kiểm tra không còn -Werror đơn lẻ (chỉ còn -Wno-error)
-          if grep -E "\-Werror[^=]|-Werror$" Makefile 2>/dev/null | grep -v "Wno-error"; then
-              echo "[!] WARNING: Some -Werror flags still remain"
-          else
-              echo "[+] All -Werror flags successfully replaced"
+          while (<>) {
+              # Rule 1: -Werror=xxx → -Wno-error=xxx
+              s/-Werror=([a-zA-Z0-9_-]+)/-Wno-error=$1/g;
+              # Rule 2: -Werror-xxx → xóa (cú pháp GCC cũ)
+              s/-Werror-([a-zA-Z0-9_-]+)//g;
+              # Rule 3: -Werror đơn lẻ (không theo sau bởi - hoặc =) → -Wno-error
+              s/-Werror(?![-=a-zA-Z0-9])/-Wno-error/g;
+              print;
+          }
+          PERL_EOF
+          chmod +x /tmp/fix_werror.pl
+          
+          # Áp dụng cho Makefile chính
+          if [ -f Makefile ]; then
+              perl /tmp/fix_werror.pl Makefile > /tmp/Makefile.new && mv /tmp/Makefile.new Makefile
+              echo "[+] Applied smart -Werror fix to main Makefile"
           fi
+          
+          # Áp dụng cho scripts/Makefile.*
+          for f in $(find scripts -name "Makefile*" 2>/dev/null); do
+              perl /tmp/fix_werror.pl "$f" > /tmp/mk.new && mv /tmp/mk.new "$f"
+          done
+          echo "[+] Applied smart -Werror fix to scripts/Makefile"
+          
+          # Verify
+          echo "[+] Verification:"
+          echo "    - Remaining -Werror (should be 0): $(grep -c '\-Werror[^=]' Makefile 2>/dev/null | grep -v Wno-error || echo 0)"
+          echo "    - Total -Wno-error (should be many): $(grep -c '\-Wno-error' Makefile 2>/dev/null || echo 0)"
+          echo "    - Broken flags like -Wno-error-xxx (should be 0): $(grep -c '\-Wno-error-[a-zA-Z]' Makefile 2>/dev/null || echo 0)"
 
       - name: Extract FinaSU Manager Signature
         run: |
@@ -201,7 +224,7 @@ jobs:
           ccache -M 10G
 
           set -eo pipefail
-          echo "Starting kernel build with -Wno-error (safe replacement)..."
+          echo "Starting kernel build with smart -Werror handling..."
           make O=out ARCH=arm64 -j$(nproc) Image.gz-dtb 2>&1 | tee build.log
           
           echo "=== CCACHE STATISTICS ==="
