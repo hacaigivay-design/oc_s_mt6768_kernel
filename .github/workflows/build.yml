@@ -42,7 +42,7 @@ jobs:
           sudo ln -sf /usr/bin/llvm-objdump-14 /usr/local/bin/llvm-objdump
           sudo ln -sf /usr/bin/llvm-strip-14   /usr/local/bin/llvm-strip
 
-      # 3. SETUP FINASU VÀ PATCH KERNEL (TẤT CẢ CÁC FIX)
+      # 3. SETUP FINASU VÀ PATCH KERNEL (DÀNH CHO KERNEL 4.19)
       - name: Setup FinaSU & Patch Kernel
         run: |
           set -e
@@ -70,16 +70,10 @@ jobs:
           export KSU_KERNEL_DIR="$(pwd)/../.."
           ./setup.sh 2>/dev/null || echo "Cảnh báo: setup.sh báo lỗi đường dẫn, nhưng patch đã chạy."
           
-          echo "=== 4. Fix lỗi cho kernel 4.14 ==="
-          # Fix lỗi MODULE_IMPORT_NS (dùng // thay vì #)
-          if [ -f core/init.c ]; then
-            sed -i 's/^MODULE_IMPORT_NS/\/\/ MODULE_IMPORT_NS/' core/init.c
-            echo "✅ Đã comment MODULE_IMPORT_NS"
-          fi
-          
-          # Vô hiệu hóa file_wrapper.c (do thiếu hàm iopoll/remap_file_range)
+          echo "=== 4. Fix lỗi cho kernel 4.19 ==="
+          # Vô hiệu hóa file_wrapper.c (Kernel 4.19 thiếu hàm iopoll, remap_file_range)
           if [ -f infra/file_wrapper.c ]; then
-            echo "// Disabled for kernel 4.14" > infra/file_wrapper.c
+            echo "// Disabled for kernel 4.19 (missing iopoll/remap_file_range)" > infra/file_wrapper.c
             echo "✅ Đã vô hiệu hóa file_wrapper.c"
           fi
           cd ../..
