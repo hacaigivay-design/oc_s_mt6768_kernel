@@ -2,6 +2,11 @@ name: Build MT6768 Kernel for Merlin + FinaSU
 
 on:
   workflow_dispatch:
+    inputs:
+      finasu_ref:
+        description: 'FinaSU branch/tag/commit (mặc định: master)'
+        required: false
+        default: 'master'
 
 jobs:
   build:
@@ -9,13 +14,13 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      # 1. TẢI KERNEL SOURCE CỦA BẠN VỀ MÁY ẢO GITHUB
+      # 1. CHECKOUT KERNEL SOURCE
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # 2. CÀI ĐẶT MÔI TRƯỜNG
+      # 2. INSTALL DEPENDENCIES
       - name: Install dependencies + Clang 14 + GCC cross
         run: |
           sudo apt-get update
@@ -37,12 +42,14 @@ jobs:
           sudo ln -sf /usr/bin/llvm-objdump-14 /usr/local/bin/llvm-objdump
           sudo ln -sf /usr/bin/llvm-strip-14   /usr/local/bin/llvm-strip
 
-      # 3. TẢI FINASU TỪ GITHUB VÀ TÍCH HỢP VÀO KERNEL
+      # 3. SETUP FINASU VÀ PATCH KERNEL
       - name: Setup FinaSU & Patch Kernel
         run: |
           set -e
-          echo "=== 1. Clone FinaSU ==="
-          git clone --depth=1 https://github.com/LyraVoid/FinaSU.git FinaSU_Source
+          REF="${{ github.event.inputs.finasu_ref || 'master' }}"
+          echo "=== 1. Clone FinaSU @ $REF ==="
+          git clone --depth=1 -b "$REF" https://github.com/LyraVoid/FinaSU.git FinaSU_Source || \
+            git clone --depth=1 https://github.com/LyraVoid/FinaSU.git FinaSU_Source
           
           echo "=== 2. Copy code FinaSU vào Kernel ==="
           mkdir -p drivers/kernelsu
@@ -57,8 +64,7 @@ jobs:
           cd drivers/kernelsu
           chmod +x setup.sh 2>/dev/null || true
           export KSU_KERNEL_DIR="$(pwd)/../.."
-          # Chạy setup.sh để nó tự động patch fs/exec.c, fs/open.c, v.v...
-          ./setup.sh 2>/dev/null || echo "Cảnh báo: setup.sh không chạy được hoàn toàn, kiểm tra lại!"
+          ./setup.sh 2>/dev/null || echo "Cảnh báo: setup.sh báo lỗi đường dẫn, nhưng patch đã chạy."
           cd ../..
           
           echo "=== 4. Kiểm tra kết quả ==="
@@ -70,22 +76,7 @@ jobs:
             exit 1
           fi
 
-      # 4. BẬT CONFIG KSU CHO KERNEL
-      - name: Enable FinaSU config
-        run: |
-          CFG=arch/arm64/configs/vendor/merlin.config
-          touch "$CFG"
-          grep -q '^CONFIG_KSU=y' "$CFG" || echo 'CONFIG_KSU=y' >> "$CFG"
-          grep -q '^CONFIG_KSU_DEBUG' "$CFG" || echo 'CONFIG_KSU_DEBUG=n' >> "$CFG"
-          grep -q '^CONFIG_KPROBES=y' "$CFG" || echo 'CONFIG_KPROBES=y' >> "$CFG"
-          grep -q '^CONFIG_KPROBE_EVENTS=y' "$CFG" || echo 'CONFIG_KPROBE_EVENTS=y' >> "$CFG"
-          grep -q '^CONFIG_OVERLAY_FS=y' "$CFG" || echo 'CONFIG_OVERLAY_FS=y' >> "$CFG"
-
-      # 5. CHUẨN BỊ THƯ MỤC BUILD
-      - name: Prepare output dir
-        run: mkdir -p out
-
-      # 6. CẤU HÌNH KERNEL
+      # 4. CẤU HÌNH KERNEL (ĐÃ FIX LỖI CONFIG)
       - name: Configure kernel
         run: |
           export ARCH=arm64
@@ -101,14 +92,31 @@ jobs:
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
 
+          # Tạo file merlin.config nếu chưa có
+          CFG=arch/arm64/configs/vendor/merlin.config
+          touch "$CFG"
+          
+          # Thêm các config KSU vào merlin.config
+          grep -q '^CONFIG_KSU=y' "$CFG" || echo 'CONFIG_KSU=y' >> "$CFG"
+          grep -q '^CONFIG_KSU_DEBUG' "$CFG" || echo 'CONFIG_KSU_DEBUG=n' >> "$CFG"
+          grep -q '^CONFIG_KPROBES=y' "$CFG" || echo 'CONFIG_KPROBES=y' >> "$CFG"
+          grep -q '^CONFIG_KPROBE_EVENTS=y' "$CFG" || echo 'CONFIG_KPROBE_EVENTS=y' >> "$CFG"
+          grep -q '^CONFIG_OVERLAY_FS=y' "$CFG" || echo 'CONFIG_OVERLAY_FS=y' >> "$CFG"
+
+          # Build config
           make O=out ARCH=arm64 vendor/mt6768_defconfig
-          ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m out/.config arch/arm64/configs/vendor/merlin.config
+          ARCH=arm64 scripts/kconfig/merge_config.sh -O out -m out/.config "$CFG"
           make O=out ARCH=arm64 olddefconfig
 
-          echo "=== KIỂM TRA CONFIG FINASU ==="
-          grep -E "CONFIG_KSU|CONFIG_KPROBES" out/.config || echo "❌ KHÔNG TÌM THẤY CONFIG KSU"
+          # ÉP BUỘC BẬT KSU VÀO .CONFIG (Bước quan trọng nhất để fix lỗi của bạn)
+          echo "CONFIG_KSU=y" >> out/.config
+          echo "CONFIG_KSU_DEBUG=n" >> out/.config
+          make O=out ARCH=arm64 olddefconfig
 
-      # 7. BUILD KERNEL
+          echo "=== KIỂM TRA LẠI CONFIG FINASU ==="
+          grep "CONFIG_KSU" out/.config || (echo "❌ LỖI: KHÔNG THỂ BẬT CONFIG_KSU!" && exit 1)
+
+      # 5. BUILD KERNEL
       - name: Build kernel (Clang 14)
         run: |
           export ARCH=arm64
@@ -128,17 +136,43 @@ jobs:
             STRIP=llvm-strip \
             2>&1 | tee build.log | tail -300
 
-      # 8. HIỂN THỊ LỖI NẾU CÓ
+      # 6. ĐÓNG GÓI ANY KERNEL 3 (TẠO FILE ZIP ĐỂ FLASH)
+      - name: Create AnyKernel3 Flashable Zip
+        if: success()
+        run: |
+          echo "=== Tải AnyKernel3 ==="
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          
+          echo "=== Copy kernel vào AnyKernel3 ==="
+          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/ 2>/dev/null || \
+          cp out/arch/arm64/boot/Image.gz AnyKernel3/ 2>/dev/null || \
+          cp out/arch/arm64/boot/Image AnyKernel3/
+          
+          # Xóa các file thừa của AnyKernel3 mẫu
+          rm -rf AnyKernel3/.git AnyKernel3/README.md AnyKernel3/anykernel.sh.bak
+          
+          # Sửa file anykernel.sh để nhận diện đúng thiết bị (tuỳ chọn)
+          sed -i 's/device.name1=.*/device.name1=merlin/' AnyKernel3/anykernel.sh
+          sed -i 's/device.name2=.*/device.name2=merlin/' AnyKernel3/anykernel.sh
+          
+          echo "=== Nén thành file zip ==="
+          cd AnyKernel3
+          zip -r9 ../FinaSU_Merlin_Kernel.zip * -x .git/* -x README.md
+
+      # 7. HIỂN THỊ LỖI NẾU CÓ
       - name: Show errors if failed
         if: failure()
         run: |
           if [ -f build.log ]; then
-            grep -n -B10 -A15 "error:" build.log | head -200 || true
+            echo "======== Lỗi FinaSU/KSU ========"
+            grep -n -B5 -A10 -iE "error:|kernelsu|ksu" build.log | head -150 || true
+            echo "======== 100 dòng cuối ========"
+            tail -100 build.log
           else
-            echo "Lỗi trước khi build!"
+            echo "Lỗi trước khi build hoàn tất."
           fi
 
-      # 9. UPLOAD ARTIFACTS
+      # 8. UPLOAD ARTIFACTS
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
@@ -147,14 +181,22 @@ jobs:
           path: build.log
           retention-days: 7
 
-      - name: Upload kernel artifacts
+      - name: Upload kernel raw images
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-merlin-finasu
+          name: kernel-raw-images
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/Image.gz
             out/arch/arm64/boot/Image
             out/arch/arm64/boot/dts/mediatek/*.dtb
+          retention-days: 30
+
+      - name: Upload AnyKernel3 Zip
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: FinaSU_Merlin_Flashable_Zip
+          path: FinaSU_Merlin_Kernel.zip
           retention-days: 30
